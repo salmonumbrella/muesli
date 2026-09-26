@@ -120,13 +120,15 @@ public struct CallRecordingLink: Codable, Sendable, Equatable {
     public var revision: CallRevision
     public var isSuppressed: Bool
     public var contactSaveRequested: Bool
+    public let observationID: UUID?
 
-    public init(recording: CallRecordingContext, personID: UUID, revision: CallRevision, isSuppressed: Bool, contactSaveRequested: Bool) {
+    public init(recording: CallRecordingContext, personID: UUID, revision: CallRevision, isSuppressed: Bool, contactSaveRequested: Bool, observationID: UUID? = nil) {
         self.recording = recording
         self.personID = personID
         self.revision = revision
         self.isSuppressed = isSuppressed
         self.contactSaveRequested = contactSaveRequested
+        self.observationID = observationID
     }
 }
 public struct CallPersonAlias: Codable, Sendable, Equatable {

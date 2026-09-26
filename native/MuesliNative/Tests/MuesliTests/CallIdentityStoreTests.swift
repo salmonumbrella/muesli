@@ -184,4 +184,21 @@ struct CallIdentityStoreTests {
         #expect(try !calls.bind([person.id], to: context))
         #expect(try calls.people().count == 1)
     }
+
+    @Test func bindingSpecificObservationDoesNotGiveAnotherCallItsTranscript() throws {
+        let (db, directory) = try database()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let calls = CallIdentityStore(store: db)
+        let h = try #require(CallIdentityNormalizer.email("caller@example.test"))
+        let first = observation(h)
+        let second = observation(h)
+        let person = try #require(try calls.resolve(first).people.first)
+        _ = try calls.resolve(second)
+        let context = CallRecordingContext(recordName: "meeting-fixture", generation: UUID(), source: .facetime,
+            sourceFingerprint: "fixture-source", sourceCallID: nil, startedAt: first.observedAt)
+        #expect(try calls.bind([person.id], to: context, observationID: first.id))
+        let history = try calls.history(personID: person.id)
+        #expect(history.first(where: { $0.observation.id == first.id })?.recordName == context.recordName)
+        #expect(history.first(where: { $0.observation.id == second.id })?.recordName == nil)
+    }
 }

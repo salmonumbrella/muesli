@@ -340,6 +340,13 @@ public final class DictationStore {
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
+        try CallIdentityDatabase.migrate(db)
+        let calls = CallIdentityDatabase(db: db)
+        for row in try calls.rows("SELECT id FROM meetings WHERE deleted_at IS NULL AND (cloud_record_name IS NULL OR cloud_record_name='')") {
+            if let id = row[0] {
+                try calls.execute("UPDATE meetings SET cloud_record_name=? WHERE id=? AND (cloud_record_name IS NULL OR cloud_record_name='')", ["meeting-" + UUID().uuidString, id])
+            }
+        }
     }
 
     private func migrateInsightsCache(db: OpaquePointer?) throws {
@@ -5141,6 +5148,35 @@ public final class DictationStore {
             followUpToRecordName: followUpToRecordName,
             visualContext: optionalStringColumn(statement, index: 26)
         )
+    }
+
+    func withCallIdentityDatabase<T>(_ body: (OpaquePointer?) throws -> T) throws -> T {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try CallIdentityDatabase.migrate(db)
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            let result = try body(db)
+            try exec("COMMIT", db: db)
+            return result
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Allocates portable local identity without changing text upload state.
+    public func ensureCallRecordingName(meetingID: Int64) throws -> String {
+        try withCallIdentityDatabase { db in
+            let calls = CallIdentityDatabase(db: db)
+            guard let row = try calls.rows("SELECT cloud_record_name FROM meetings WHERE id=? AND deleted_at IS NULL", [String(meetingID)]).first else {
+                throw DictationStoreError.meetingNotFound(id: meetingID)
+            }
+            if let name = row[0], !name.isEmpty { return name }
+            let name = "meeting-" + UUID().uuidString
+            try calls.execute("UPDATE meetings SET cloud_record_name=? WHERE id=?", [name, String(meetingID)])
+            return name
+        }
     }
 
     private func openDatabase() throws -> OpaquePointer? {
