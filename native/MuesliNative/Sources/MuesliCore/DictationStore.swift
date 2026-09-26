@@ -1220,7 +1220,14 @@ public final class DictationStore {
         )
     }
 
+    public func attachAutomaticCallMeetingParticipants(meetingID: Int64, participants: [MeetingParticipantDraft]) throws {
+        guard !participants.isEmpty else { return }
+        _ = try ensureCallRecordingName(meetingID: meetingID)
+        try attachMeetingParticipants(meetingID: meetingID, participants: participants, source: .automaticCall)
+    }
+
     private enum MeetingParticipantSource: String {
+        case automaticCall
         case calendar
         case manual
     }
@@ -1303,11 +1310,25 @@ public final class DictationStore {
 
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
         do {
-            if try meetingParticipantSource(
+            let source = try meetingParticipantSource(
                 meetingID: meetingID,
                 participantIdentifier: normalizedIdentifier,
                 db: db
-            ) == .calendar {
+            )
+            let callPersonID = normalizedIdentifier.hasPrefix("call-person:")
+                ? UUID(uuidString: String(normalizedIdentifier.dropFirst("call-person:".count))) : nil
+            if let callPersonID {
+                let calls = CallIdentityDatabase(db: db)
+                let name: String
+                if let existing = try meetingCloudRecordName(id: meetingID, db: db), !existing.isEmpty { name = existing }
+                else {
+                    name = "meeting-" + UUID().uuidString
+                    try calls.execute("UPDATE meetings SET cloud_record_name=? WHERE id=?", [name, String(meetingID)])
+                }
+                let revision = try calls.nextRevision(provenance: .manual, restoreEpoch: calls.person(calls.root(callPersonID))?.revision.restoreEpoch ?? 0)
+                try calls.suppress(personID: callPersonID, recordName: name, revision: revision)
+            }
+            if source == .calendar || source == .automaticCall || callPersonID != nil {
                 try suppressMeetingParticipant(
                     meetingID: meetingID,
                     participantIdentifier: normalizedIdentifier,
@@ -1372,17 +1393,20 @@ public final class DictationStore {
         ON CONFLICT(meeting_id, participant_identifier)
         DO UPDATE SET
             display_name = CASE
-                WHEN meeting_participants.source = 'manual' AND excluded.source = 'calendar'
+                WHEN (meeting_participants.source = 'manual' AND excluded.source = 'calendar')
+                  OR (excluded.source = 'automaticCall' AND meeting_participants.source IN ('manual','calendar'))
                     THEN meeting_participants.display_name
                 ELSE excluded.display_name
             END,
             email_address = CASE
-                WHEN meeting_participants.source = 'manual' AND excluded.source = 'calendar'
+                WHEN (meeting_participants.source = 'manual' AND excluded.source = 'calendar')
+                  OR (excluded.source = 'automaticCall' AND meeting_participants.source IN ('manual','calendar'))
                     THEN meeting_participants.email_address
                 ELSE COALESCE(excluded.email_address, meeting_participants.email_address)
             END,
             source = CASE
                 WHEN excluded.source = 'manual' THEN 'manual'
+                WHEN excluded.source = 'calendar' AND meeting_participants.source = 'automaticCall' THEN 'calendar'
                 ELSE meeting_participants.source
             END,
             is_suppressed = CASE
