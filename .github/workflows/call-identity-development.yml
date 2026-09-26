@@ -16,6 +16,17 @@ jobs:
           path: .build
           key: call-identity-core-26-6-${{ github.sha }}
           restore-keys: call-identity-core-26-6-
+      - name: Inspect installed call applications
+        run: |
+          python3 - <<'PYTHON'
+          import plistlib
+          from pathlib import Path
+          for name in ['Phone', 'FaceTime']:
+              path = Path('/System/Applications') / (name + '.app/Contents/Info.plist')
+              if path.exists():
+                  data = plistlib.loads(path.read_bytes())
+                  print(name, data.get('CFBundleIdentifier'), data.get('CFBundleShortVersionString'))
+          PYTHON
       - name: Isolate call identity dependencies
         run: |
           python3 - <<'PYTHON'
