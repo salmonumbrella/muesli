@@ -85,4 +85,14 @@ struct CallIdentityModelTests {
             #expect(CallIdentityNormalizer.personID(for: phone) == CallIdentityNormalizer.personID(for: again))
         }
     }
+    @Test func portableFixtureDecodesAndRoundTrips() throws {
+        let url = try #require(Bundle.module.url(forResource: "schema-v1", withExtension: "json", subdirectory: "CallIdentity"))
+        let data = try Data(contentsOf: url)
+        let observation = try JSONDecoder().decode(CallObservation.self, from: data)
+        #expect(observation.source == .phone)
+        #expect(observation.handles.first?.stableKey == "phone|e164|+12025550123|")
+        let encoded = try JSONEncoder().encode(observation)
+        #expect(try JSONDecoder().decode(CallObservation.self, from: encoded) == observation)
+    }
+
 }

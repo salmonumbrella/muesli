@@ -1,0 +1,18 @@
+{
+  "id": "00000000-0000-0000-0000-000000000001",
+  "source": "phone",
+  "sourceDeviceID": "fixture-device",
+  "observedAt": 0,
+  "direction": "incoming",
+  "status": "connected",
+  "evidence": "activeCallAX",
+  "handles": [
+    {
+      "kind": "phone",
+      "rawValue": "+1 (202) 555-0123",
+      "canonicalValue": "+12025550123",
+      "namespace": "e164",
+      "validation": "internationalSyntax"
+    }
+  ]
+}
