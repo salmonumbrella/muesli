@@ -329,6 +329,7 @@ struct CallIdentityDatabase {
 
     func suppress(personID: UUID, recordName: String?, revision: CallRevision) throws {
         let id = try root(personID)
+        if let person = try person(id), person.revision.restoreEpoch > revision.restoreEpoch { return }
         let key = recordName.map { "recording|" + $0 + "|" + id.uuidString } ?? "person|" + id.uuidString
         if let current = try suppression(id, recordName: recordName), current.restoreEpoch > revision.restoreEpoch { return }
         try execute("INSERT INTO call_suppressions(scope_key,epoch,revision_json) VALUES(?,?,?) ON CONFLICT(scope_key) DO UPDATE SET epoch=excluded.epoch,revision_json=excluded.revision_json", [key, String(revision.restoreEpoch), try encode(revision)])
@@ -374,8 +375,14 @@ struct CallIdentityDatabase {
     func mergeAlias(_ alias: CallPersonAlias) throws {
         let from = try root(alias.fromID)
         let target = try root(alias.rootID)
+        if from == target {
+            guard alias.fromID != target else { throw CallIdentityStoreError.invalidAlias }
+            return
+        }
         guard from != target, target.uuidString < from.uuidString,
               var rootPerson = try person(target), let oldPerson = try person(from) else { throw CallIdentityStoreError.invalidAlias }
+        let previousRemovals = try rows("SELECT scope_key,revision_json FROM call_suppressions")
+            .filter { $0[0]?.hasSuffix("|" + from.uuidString) == true }
         // Proven merges only; never infer this edge from shared handles.
         for handle in oldPerson.handles where !rootPerson.handles.contains(where: { $0.stableKey == handle.stableKey }) {
             rootPerson.handles.append(handle)
@@ -393,6 +400,11 @@ struct CallIdentityDatabase {
         }
         try execute("DELETE FROM call_contact_write_intents WHERE person_id=?", [from.uuidString])
         if let removal = try suppression(from) { try suppress(personID: target, recordName: nil, revision: removal) }
+        for row in previousRemovals {
+            guard let key = row[0], key.hasPrefix("recording|") else { continue }
+            let recordName = String(key.dropFirst("recording|".count).dropLast(from.uuidString.count + 1))
+            try suppress(personID: target, recordName: recordName, revision: decode(CallRevision.self, row[1]))
+        }
         for row in try rows("SELECT record_name,revision_json FROM call_recording_links WHERE person_id=? AND suppressed=1", [target.uuidString]) {
             if let name = row[0] { try suppress(personID: target, recordName: name, revision: decode(CallRevision.self, row[1])) }
         }
