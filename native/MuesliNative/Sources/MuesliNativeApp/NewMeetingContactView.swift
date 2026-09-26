@@ -15,6 +15,7 @@ struct NewMeetingContactView: View {
     private enum Field {
         case firstName
         case lastName
+        case phone
         case email
     }
 
@@ -31,6 +32,7 @@ struct NewMeetingContactView: View {
             Grid(alignment: .leading, horizontalSpacing: MuesliTheme.spacing12, verticalSpacing: MuesliTheme.spacing12) {
                 contactField("First name", text: $draft.givenName, field: .firstName)
                 contactField("Last name", text: $draft.familyName, field: .lastName)
+                contactField("Phone", text: $draft.phoneNumber, field: .phone)
                 contactField("Email", text: $draft.emailAddress, field: .email)
             }
 
