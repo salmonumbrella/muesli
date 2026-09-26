@@ -43,6 +43,20 @@ private actor FixtureCallOwner: CallContactWriterOwnership {
     func releaseWriterAfterDrain(deviceID: String) async throws { if owner == deviceID { owner = nil } }
 }
 
+private actor HeldCallContacts: CallContactsClient {
+    private var saving = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func authorization() async -> CallContactsAuthorization { .full }
+    func matches(handles: [CallHandle]) async throws -> [String] { [] }
+    func create(intent: CallContactIntent) async throws -> String {
+        saving = true
+        await withCheckedContinuation { continuation = $0 }
+        return "fixture-saved-contact"
+    }
+    func waitUntilSaving() async { while !saving { await Task.yield() } }
+    func completeSave() { continuation?.resume(); continuation = nil }
+}
+
 @Suite("Automatic call Contacts")
 struct AutomaticCallContactWriterTests {
     private func fixture(handle: CallHandle? = nil) throws -> (CallIdentityStore, UUID, URL) {
@@ -154,4 +168,24 @@ struct AutomaticCallContactWriterTests {
         #expect(await writer.process(personID: id) == .failed)
         #expect(await contacts.createCount() == 1)
     }
+    @Test func ownerReleaseWaitsForSaveAndDisablesNewWork() async throws {
+        let (store, id, directory) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let contacts = HeldCallContacts()
+        let owner = FixtureCallOwner()
+        let writer = AutomaticCallContactWriter(store: store, contacts: contacts, ownership: owner, deviceID: "fixture-device")
+        let save = Task { await writer.process(personID: id) }
+        await contacts.waitUntilSaving()
+        await writer.disable()
+        let release = Task { try await writer.disableAndRelease() }
+        #expect(try await owner.ownsWriter(deviceID: "fixture-device"))
+        #expect(try await !owner.claimWriter(deviceID: "fixture-other-device"))
+        #expect(await writer.process(personID: id) == .disabled)
+        await contacts.completeSave()
+        #expect(await save.value == .saved)
+        try await release.value
+        #expect(try await !owner.ownsWriter(deviceID: "fixture-device"))
+        #expect(try await owner.claimWriter(deviceID: "fixture-other-device"))
+    }
+
 }
