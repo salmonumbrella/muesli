@@ -290,4 +290,41 @@ struct MeetingParticipantStoreTests {
 
         #expect(try store.listMeetingParticipants(meetingID: meetingID).isEmpty)
     }
+    @Test func automaticCallerDoesNotOverwriteCalendarOrManualParticipant() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(in: store)
+        let id = "call-person:00000000-0000-0000-0000-000000000001"
+        try store.attachCalendarMeetingParticipants(meetingID: meetingID,
+            participants: [participant(id, name: "Calendar name")])
+        try store.attachAutomaticCallMeetingParticipants(meetingID: meetingID,
+            participants: [participant(id, name: "+12025550123")])
+        #expect(try store.listMeetingParticipants(meetingID: meetingID).first?.displayName == "Calendar name")
+        try store.attachMeetingParticipant(meetingID: meetingID, participant: participant(id, name: "Manual name"))
+        try store.attachAutomaticCallMeetingParticipants(meetingID: meetingID,
+            participants: [participant(id, name: "+12025550123")])
+        #expect(try store.listMeetingParticipants(meetingID: meetingID).first?.displayName == "Manual name")
+    }
+
+    @Test func manuallyRemovingCallerSuppressesAutomaticReplayAndItsLink() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(in: store)
+        let calls = CallIdentityStore(store: store)
+        let h = try #require(CallIdentityNormalizer.phone("+12025550123"))
+        let o = CallObservation(id: UUID(), source: .phone, sourceDeviceID: "fixture-device",
+            observedAt: Date(), evidence: .activeCallAX, handles: [h])
+        let p = try #require(try calls.resolve(o).people.first)
+        let id = "call-person:" + p.id.uuidString
+        let context = CallRecordingContext(recordName: try store.ensureCallRecordingName(meetingID: meetingID),
+            generation: UUID(), source: .phone, sourceFingerprint: "fixture", sourceCallID: nil, startedAt: Date())
+        #expect(try calls.bind([p.id], to: context, observationID: o.id))
+        try store.attachAutomaticCallMeetingParticipants(meetingID: meetingID,
+            participants: [participant(id, name: h.canonicalValue)])
+        try store.removeMeetingParticipant(meetingID: meetingID, participantIdentifier: id)
+        try store.attachAutomaticCallMeetingParticipants(meetingID: meetingID,
+            participants: [participant(id, name: h.canonicalValue)])
+        #expect(try store.listMeetingParticipants(meetingID: meetingID).isEmpty)
+        #expect(try calls.links(recordName: context.recordName).isEmpty)
+        #expect(try !calls.bind([p.id], to: context, observationID: o.id))
+    }
+
 }
