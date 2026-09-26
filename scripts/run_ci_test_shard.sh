@@ -19,6 +19,7 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       CallIdentityModelTests
+      CallIdentityStoreTests
       DictationStoreTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests

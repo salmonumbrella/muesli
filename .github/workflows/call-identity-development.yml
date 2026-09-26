@@ -23,7 +23,7 @@ jobs:
           import PackageDescription
           let package = Package(name: "CallIdentityDevelopment", platforms: [.macOS("14.2")], targets: [
               .target(name: "MuesliCore", path: "native/MuesliNative/Sources/MuesliCore", linkerSettings: [.linkedLibrary("sqlite3")]),
-              .testTarget(name: "MuesliTests", dependencies: ["MuesliCore"], path: "native/MuesliNative/Tests/MuesliTests", sources: ["CallIdentityModelTests.swift"], resources: [.copy("Fixtures/CallIdentity")], linkerSettings: [.linkedLibrary("sqlite3")])
+              .testTarget(name: "MuesliTests", dependencies: ["MuesliCore"], path: "native/MuesliNative/Tests/MuesliTests", sources: ["CallIdentityModelTests.swift", "CallIdentityStoreTests.swift"], resources: [.copy("Fixtures/CallIdentity")], linkerSettings: [.linkedLibrary("sqlite3")])
           ])
           SWIFT
       - name: Call identity tests
