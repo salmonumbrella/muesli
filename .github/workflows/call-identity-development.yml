@@ -1,0 +1,25 @@
+name: Call identity development
+on:
+  workflow_dispatch:
+  pull_request:
+jobs:
+  contracts:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: native/MuesliNative/.build
+          key: call-identity-spm-26-6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-${{ github.sha }}
+          restore-keys: call-identity-spm-26-6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-
+      - name: Call identity tests
+        run: swift test --package-path native/MuesliNative --filter 'CallIdentity|AutomaticCallContact|CallSource|CallAX|CallHistory'
+      - uses: actions/cache/save@v4
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: native/MuesliNative/.build
+          key: ${{ steps.cache.outputs.cache-primary-key }}
