@@ -16,18 +16,26 @@ jobs:
           path: .build
           key: call-identity-core-26-6-${{ github.sha }}
           restore-keys: call-identity-core-26-6-
-      - name: Isolate dependency-free core tests
+      - name: Isolate call identity dependencies
         run: |
-          cat > Package.swift <<'SWIFT'
-          // swift-tools-version: 5.9
-          import PackageDescription
-          let package = Package(name: "CallIdentityDevelopment", platforms: [.macOS("14.2")], targets: [
-              .target(name: "MuesliCore", path: "native/MuesliNative/Sources/MuesliCore", linkerSettings: [.linkedLibrary("sqlite3")]),
-              .testTarget(name: "MuesliTests", dependencies: ["MuesliCore"], path: "native/MuesliNative/Tests/MuesliTests", sources: ["CallIdentityModelTests.swift", "CallIdentityStoreTests.swift", "MeetingParticipantStoreTests.swift"], resources: [.copy("Fixtures/CallIdentity")], linkerSettings: [.linkedLibrary("sqlite3")])
-          ])
-          SWIFT
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import json
+          app_root = Path("native/MuesliNative/Sources/MuesliNativeApp")
+          selected = ["MeetingContactCreator.swift", "MeetingContactResolver.swift", "MeetingContactIdentity.swift", "AutomaticCallContactWriter.swift", "CallContactWriterOwnership.swift", "CallContactsClient.swift", "CallAXReader.swift", "CallSourceRegistry.swift", "CallSourceAdapters.swift", "CallIdentityCoordinator.swift"]
+          app_sources = [name for name in selected if (app_root / name).exists()]
+          test_root = Path("native/MuesliNative/Tests/MuesliTests")
+          selected_tests = ["CallIdentityModelTests.swift", "CallIdentityStoreTests.swift", "MeetingParticipantStoreTests.swift", "AutomaticCallContactWriterTests.swift", "CallSourceAdapterTests.swift", "CallIdentityCoordinatorTests.swift"]
+          test_sources = [name for name in selected_tests if (test_root / name).exists()]
+          manifest = '// swift-tools-version: 5.9\nimport PackageDescription\n'
+          manifest += 'let package = Package(name: "CallIdentityDevelopment", platforms: [.macOS("14.2")], targets: [\n'
+          manifest += '.target(name: "MuesliCore", path: "native/MuesliNative/Sources/MuesliCore", linkerSettings: [.linkedLibrary("sqlite3")]),\n'
+          manifest += '.target(name: "MuesliNativeApp", dependencies: ["MuesliCore"], path: "native/MuesliNative/Sources/MuesliNativeApp", sources: ' + json.dumps(app_sources) + '),\n'
+          manifest += '.testTarget(name: "MuesliTests", dependencies: ["MuesliCore", "MuesliNativeApp"], path: "native/MuesliNative/Tests/MuesliTests", sources: ' + json.dumps(test_sources) + ', resources: [.copy("Fixtures/CallIdentity")], linkerSettings: [.linkedLibrary("sqlite3")])\n])\n'
+          Path("Package.swift").write_text(manifest)
+          PYTHON
       - name: Call identity tests
-        run: swift test --filter 'CallIdentity|MeetingParticipantStoreTests'
+        run: swift test --filter 'CallIdentity|MeetingParticipantStoreTests|AutomaticCallContact|CallSource|CallAX|CallHistory'
       - uses: actions/cache/save@v4
         if: always() && steps.cache.outputs.cache-hit != 'true'
         with:

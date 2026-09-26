@@ -20,6 +20,7 @@ case "${shard}" in
       ConfigStoreTests
       CallIdentityModelTests
       CallIdentityStoreTests
+      AutomaticCallContactWriterTests
       DictationStoreTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
