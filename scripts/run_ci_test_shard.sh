@@ -18,6 +18,7 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      CallIdentityModelTests
       DictationStoreTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
