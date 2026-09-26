@@ -13,13 +13,23 @@ jobs:
       - uses: actions/cache/restore@v4
         id: cache
         with:
-          path: native/MuesliNative/.build
-          key: call-identity-spm-26-6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-${{ github.sha }}
-          restore-keys: call-identity-spm-26-6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-
+          path: .build
+          key: call-identity-core-26-6-${{ github.sha }}
+          restore-keys: call-identity-core-26-6-
+      - name: Isolate dependency-free core tests
+        run: |
+          cat > Package.swift <<'SWIFT'
+          // swift-tools-version: 5.9
+          import PackageDescription
+          let package = Package(name: "CallIdentityDevelopment", platforms: [.macOS("14.2")], targets: [
+              .target(name: "MuesliCore", path: "native/MuesliNative/Sources/MuesliCore", linkerSettings: [.linkedLibrary("sqlite3")]),
+              .testTarget(name: "MuesliTests", dependencies: ["MuesliCore"], path: "native/MuesliNative/Tests/MuesliTests", sources: ["CallIdentityModelTests.swift"], resources: [.copy("Fixtures/CallIdentity")], linkerSettings: [.linkedLibrary("sqlite3")])
+          ])
+          SWIFT
       - name: Call identity tests
-        run: swift test --package-path native/MuesliNative --filter 'CallIdentity|AutomaticCallContact|CallSource|CallAX|CallHistory'
+        run: swift test --filter CallIdentity
       - uses: actions/cache/save@v4
         if: always() && steps.cache.outputs.cache-hit != 'true'
         with:
-          path: native/MuesliNative/.build
+          path: .build
           key: ${{ steps.cache.outputs.cache-primary-key }}
