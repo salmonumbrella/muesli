@@ -202,4 +202,37 @@ struct CallIdentityStoreTests {
         #expect(history.first(where: { $0.observation.id == first.id })?.recordName == context.recordName)
         #expect(history.first(where: { $0.observation.id == second.id })?.recordName == nil)
     }
+
+    @Test func anOlderTombstoneCannotUndoAnExplicitHigherEpochRestore() throws {
+        let (db, directory) = try database()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let calls = CallIdentityStore(store: db)
+        let h = try #require(CallIdentityNormalizer.email("caller@example.test"))
+        let person = try #require(try calls.resolve(observation(h)).people.first)
+        let old = CallRevision(restoreEpoch: 0, counter: 9, deviceID: "fixture-device", provenance: .manual)
+        try calls.suppress(personID: person.id, recordName: nil, revision: old)
+        try calls.restore(personID: person.id,
+            revision: CallRevision(restoreEpoch: 1, counter: 10, deviceID: "fixture-device", provenance: .manual))
+        try calls.suppress(personID: person.id, recordName: nil, revision: old)
+        #expect(try calls.resolve(observation(h)).people.map(\.id) == [person.id])
+    }
+
+    @Test func provenAliasCarriesRemovalEvenBeforeAnyRecordingLinkExists() throws {
+        let (db, directory) = try database()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let calls = CallIdentityStore(store: db)
+        let fromHandle = try #require(CallIdentityNormalizer.email("other@example.test"))
+        let rootHandle = try #require(CallIdentityNormalizer.email("caller@example.test"))
+        let from = try #require(try calls.resolve(observation(fromHandle)).people.first)
+        let root = try #require(try calls.resolve(observation(rootHandle)).people.first)
+        let context = CallRecordingContext(recordName: "meeting-fixture", generation: UUID(), source: .facetime,
+            sourceFingerprint: "fixture-source", sourceCallID: nil, startedAt: Date())
+        let r = CallRevision(restoreEpoch: 0, counter: 9, deviceID: "fixture-device", provenance: .manual)
+        try calls.suppress(personID: from.id, recordName: context.recordName, revision: r)
+        let alias = CallPersonAlias(fromID: from.id, rootID: root.id, revision: r)
+        try calls.mergeAlias(alias)
+        #expect(try !calls.bind([root.id], to: context))
+        try calls.mergeAlias(alias)
+        #expect(try !calls.bind([root.id], to: context))
+    }
 }
