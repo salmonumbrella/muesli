@@ -1,4 +1,4 @@
 {
-  "sha": "a585e2e9ad8ac5076fd5cc4917f6640e47fdd6d9",
-  "filter": "CallerHandleNormalizerTests|CallerStoreTests|PhoneCallerParserTests|PhoneCallerAXReaderTests"
+  "sha": "7163dafaa5fdcaab6832e712ebd701937f6fb9a9",
+  "filter": "Caller|PhoneCaller|DictationStoreTests|MuesliCKSyncEngineTests|MeetingParticipantStoreTests|MeetingCaptureLifecycleTests|MeetingCaptureShutdownTests|MeetingsNavigationTests"
 }
