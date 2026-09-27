@@ -1,4 +1,4 @@
 {
-  "sha": "ce608485e3578be5dc2bd7cc5ba94d6f0e05e261",
-  "filter": "Caller|PhoneCaller"
+  "sha": "8724a619d55d928336a6b3e9cbf58264134d6bdf",
+  "filter": "CallerHandleNormalizerTests|CallerStoreTests|PhoneCallerParserTests|PhoneCallerAXReaderTests"
 }
