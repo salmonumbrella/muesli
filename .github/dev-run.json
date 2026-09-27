@@ -1,4 +1,4 @@
 {
-  "sha": "dc1018a556f28d5f3b9c3e3a575e165de78e6a83",
+  "sha": "db24b59ad35016f5c0f9d869d534b08115304d99",
   "filter": "AppConfigTests|CallerSummaryFilterTests|CallerIdentityCoordinatorTests|MeetingCaptureLifecycleTests|MeetingCaptureShutdownTests|MeetingParticipantStoreTests|MeetingSummaryClientTests"
 }
