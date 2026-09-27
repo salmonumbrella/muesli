@@ -1,4 +1,4 @@
 {
-  "sha": "b09eb99656b575cc8dc19de64189b28ba0a7bfef",
-  "filter": "CallerIdentityCoordinatorTests"
+  "sha": "027b9937153363bc9b44a33c454ab985b7a76dd7",
+  "filter": "AppConfigTests|CallerSummaryFilterTests"
 }
