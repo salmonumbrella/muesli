@@ -1,4 +1,6 @@
 name: Dev tests (fork-only harness)
+permissions:
+  contents: read
 on:
   push:
     branches: [ci/dev-harness]
@@ -36,7 +38,7 @@ jobs:
         id: cache
         with:
           path: native/MuesliNative/.build
-          key: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-${{ steps.req.outputs.sha }}
+          key: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}
           restore-keys: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-
       - name: Build tests
         run: swift build --package-path native/MuesliNative --build-tests
