@@ -1,0 +1,49 @@
+name: Dev tests (fork-only harness)
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Exact feature commit SHA to test
+        required: true
+      filter:
+        description: swift test --filter regex (empty = build only)
+        required: false
+        default: ''
+concurrency:
+  group: dev-tests-${{ inputs.sha }}-${{ inputs.filter }}
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - name: Verify tested SHA
+        env:
+          EXPECTED: ${{ inputs.sha }}
+        run: |
+          actual=$(git rev-parse HEAD)
+          echo "tested=$actual"
+          test "$actual" = "$EXPECTED"
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: native/MuesliNative/.build
+          key: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-${{ inputs.sha }}
+          restore-keys: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-
+      - name: Build tests
+        run: swift build --package-path native/MuesliNative --build-tests
+      - uses: actions/cache/save@v4
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: native/MuesliNative/.build
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Run filtered tests
+        if: inputs.filter != ''
+        env:
+          FILTER: ${{ inputs.filter }}
+        run: swift test --package-path native/MuesliNative --skip-build --no-parallel --filter "$FILTER"
