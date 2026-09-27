@@ -1,1 +1,4 @@
-{"sha":"d457aaf94691a73afd2867f5a6ca7fdd203044db","filter":"MeetingParticipantStoreTests"}
+{
+  "sha": "1ed3f84222a67c46e3f6fda9b06f541344afa5d5",
+  "filter": "CallerHandleNormalizerTests"
+}
