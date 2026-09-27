@@ -1,16 +1,10 @@
 name: Dev tests (fork-only harness)
 on:
-  workflow_dispatch:
-    inputs:
-      sha:
-        description: Exact feature commit SHA to test
-        required: true
-      filter:
-        description: swift test --filter regex (empty = build only)
-        required: false
-        default: ''
+  push:
+    branches: [ci/dev-harness]
+    paths: [.github/dev-run.json]
 concurrency:
-  group: dev-tests-${{ inputs.sha }}-${{ inputs.filter }}
+  group: dev-tests-${{ github.sha }}
 jobs:
   test:
     runs-on: macos-26
@@ -18,13 +12,22 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
+      - name: Read run request
+        id: req
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body=$(gh api "repos/${{ github.repository }}/contents/.github/dev-run.json?ref=${{ github.sha }}" --jq .content | base64 -d)
+          echo "$body"
+          echo "sha=$(jq -r .sha <<<"$body")" >> "$GITHUB_OUTPUT"
+          echo "filter=$(jq -r '.filter // ""' <<<"$body")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.sha }}
+          ref: ${{ steps.req.outputs.sha }}
           persist-credentials: false
       - name: Verify tested SHA
         env:
-          EXPECTED: ${{ inputs.sha }}
+          EXPECTED: ${{ steps.req.outputs.sha }}
         run: |
           actual=$(git rev-parse HEAD)
           echo "tested=$actual"
@@ -33,7 +36,7 @@ jobs:
         id: cache
         with:
           path: native/MuesliNative/.build
-          key: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-${{ inputs.sha }}
+          key: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-${{ steps.req.outputs.sha }}
           restore-keys: dev-tests-xcode26.6-${{ hashFiles('native/MuesliNative/Package.resolved') }}-
       - name: Build tests
         run: swift build --package-path native/MuesliNative --build-tests
@@ -43,7 +46,7 @@ jobs:
           path: native/MuesliNative/.build
           key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Run filtered tests
-        if: inputs.filter != ''
+        if: steps.req.outputs.filter != ''
         env:
-          FILTER: ${{ inputs.filter }}
+          FILTER: ${{ steps.req.outputs.filter }}
         run: swift test --package-path native/MuesliNative --skip-build --no-parallel --filter "$FILTER"
