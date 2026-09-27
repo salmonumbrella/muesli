@@ -1,4 +1,1 @@
-{
-  "sha": "71c113bb23bd7ddd88bc86a4b36630f48042bedf",
-  "filter": "Caller|PhoneCaller|DictationStoreTests|MuesliCKSyncEngineTests|MeetingParticipantStoreTests|MeetingCaptureLifecycleTests|MeetingCaptureShutdownTests|MeetingsNavigationTests"
-}
+{"sha":"b14020b7","filter":"Caller|PhoneCaller|DictationStoreTests|MuesliCKSyncEngineTests|MeetingParticipantStoreTests|MeetingCaptureLifecycleTests|MeetingCaptureShutdownTests|MeetingsNavigationTests"}
