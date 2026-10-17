@@ -89,6 +89,46 @@ struct TranscriptionCoordinatorTests {
         let _ = TranscriptionCoordinator()
     }
 
+    @Test("live speaker inference does not block coordinator work used by ASR")
+    func liveSpeakerInferenceRunsOffCoordinatorActor() async throws {
+        let started = TranscriptionLifecycleTestLatch()
+        let release = TranscriptionLifecycleTestLatch()
+        let worker = LiveSpeakerInferenceWorker(
+            modelLoader: { _ in throw CancellationError() },
+            inferenceOverride: { _ in
+                await started.signal()
+                await release.wait()
+                return []
+            }
+        )
+        let coordinator = TranscriptionCoordinator(liveSpeakerInferenceWorker: worker)
+        let epoch = UUID()
+        await coordinator.beginLiveSpeakerEpoch(epoch)
+        var queue = MeetingSpeakerPCMQueue()
+        queue.append([Float](repeating: 0.01, count: 80_000), channel: .system, startSample: 0)
+        let window = try #require(queue.pop())
+
+        let inference = Task { try await coordinator.inferLiveSpeakers(epoch: epoch, window: window) }
+        await started.wait()
+        let coordinatorResponded = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                _ = await coordinator.ownerVoiceModelIdentity()
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(1))
+                return false
+            }
+            let result = await group.next() ?? false
+            await release.signal()
+            group.cancelAll()
+            return result
+        }
+
+        _ = try await inference.value
+        #expect(coordinatorResponded)
+    }
+
     @Test("backend routing covers all known backends")
     func allBackendsCovered() {
         var backends = Set(BackendOption.all.map(\.backend))

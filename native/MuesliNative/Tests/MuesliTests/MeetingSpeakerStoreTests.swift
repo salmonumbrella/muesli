@@ -2,6 +2,7 @@ import Foundation
 import MuesliCore
 import SQLite3
 import Testing
+@testable import MuesliNativeApp
 
 @Suite("Guarded meeting speaker storage")
 struct MeetingSpeakerStoreTests {
@@ -53,14 +54,36 @@ struct MeetingSpeakerStoreTests {
         try store.updateMeetingTranscriptAndSummary(id: id, rawTranscript: "New speech", formattedNotes: "Retained notes",
             selectedTemplateID: "test", selectedTemplateName: "Test", selectedTemplateKind: .builtin,
             selectedTemplatePrompt: "", expectedTranscript: before, summaryIsCurrent: false)
+        try MeetingSpeakerStatePersistence.persist(nil, to: store, meetingID: id, summaryIsCurrent: false)
         #expect(try store.meetingSummaryIsStale(id: id))
     }
 
-    @Test func processingInvalidatesPriorIdentityBeforeNewInference() throws {
+    @Test func successfulSummaryWithoutSpeakerStateClearsStaleness() throws {
+        let (store, id, _) = try fixture()
+        try store.updateMeetingTranscript(id: id, rawTranscript: "Resumed transcript")
+        #expect(try store.meetingSummaryIsStale(id: id))
+
+        try MeetingSpeakerStatePersistence.persist(nil, to: store, meetingID: id, summaryIsCurrent: true)
+
+        #expect(try !store.meetingSummaryIsStale(id: id))
+    }
+
+    @Test func failedRetranscriptionPreservesSavedSpeakerIdentity() throws {
         let (store, id, state) = try fixture()
         let before = try #require(store.meetingTranscriptVersion(id: id))
         #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: before) == .updated)
         try store.updateMeetingStatus(id: id, status: .processing)
+        #expect(try store.meetingSpeakerSnapshot(id: id)?.state == state)
+        #expect(try store.meetingTranscriptVersion(id: id)?.generation == before.generation)
+        try store.updateMeetingStatus(id: id, status: .completed)
+        #expect(try store.meetingSpeakerSnapshot(id: id)?.state == state)
+    }
+
+    @Test func startingANewRecordingInvalidatesPriorIdentity() throws {
+        let (store, id, state) = try fixture()
+        let before = try #require(store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: before) == .updated)
+        try store.updateMeetingStatus(id: id, status: .recording)
         #expect(try store.meetingSpeakerSnapshot(id: id) == nil)
         #expect(try store.meetingTranscriptVersion(id: id)?.generation != before.generation)
     }

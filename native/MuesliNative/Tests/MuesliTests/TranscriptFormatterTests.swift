@@ -610,6 +610,30 @@ struct TranscriptFormatterTests {
         #expect(!result.contains("You:"))
     }
 
+    @Test("single-cluster owner identity does not cover speech outside diarization")
+    func singleOwnerClusterDoesNotLabelUncoveredSpeech() {
+        let epoch = UUID()
+        var state = TranscriptFormatter.structured(
+            micSegments: [
+                SpeechSegment(start: 0.0, end: 2.0, text: "Covered owner words"),
+                SpeechSegment(start: 20.0, end: 22.0, text: "Uncovered guest words"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [makeDiarSeg(speakerId: "owner-cluster", start: 0.0, end: 6.0)],
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner-cluster")
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Enrolled owner", profileID: UUID())
+
+        #expect(state.turns.count == 2)
+        #expect(state.labels[state.turns[0].speaker] == "Enrolled owner (You)")
+        #expect(state.labels[state.turns[1].speaker] == "Local speaker")
+        #expect(state.turns[1].speaker != ownerKey)
+    }
+
     @Test("a brief extra mic diarizer speaker keeps the You label")
     func briefExtraMicSpeakerKeepsYou() {
         let meetingStart = Date(timeIntervalSince1970: 0)
@@ -659,6 +683,23 @@ struct TranscriptFormatterTests {
 }
 
 extension TranscriptFormatterTests {
+    @Test("microphone identity stays a heading without structured speaker state")
+    func microphoneIdentityParsesAsSpeakerHeading() {
+        let state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 1, text: "Spoken words")],
+            systemSegments: [],
+            diarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            microphoneIdentityRequired: true
+        )
+
+        let messages = TranscriptChatMessage.messages(from: state.render())
+
+        #expect(messages.map(\.speaker) == ["Microphone"])
+        #expect(messages.map(\.text) == ["Spoken words"])
+        #expect(messages.allSatisfy { !$0.isUser })
+    }
+
     @Test func structuredStateRetainsChannelAndClusterKeys() {
         let epoch = UUID()
         let mic = [SpeechSegment(start: 0, end: 1, text: "Local words")]

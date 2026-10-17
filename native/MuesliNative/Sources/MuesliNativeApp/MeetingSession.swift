@@ -252,6 +252,9 @@ final class MeetingSession {
     private var systemChunkTimingTracker = MeetingChunkTimingTracker()
     private var lastSystemSampleUptime: Double?
     private var lastMicSampleUptime: Double?
+    var usesLiveSpeakerLabels: Bool { config.enableLiveSpeakerLabels }
+    private var liveSpeakerFeed: MeetingLiveSpeakerFeed?
+    var onLiveSpeakerState: (@Sendable (MeetingSpeakerState) -> Void)?
     private var ownerRecognitionContext: MeetingOwnerRecognitionContext?
     var ownerRecognitionProvider: (() async -> MeetingOwnerRecognitionContext?)?
     private let speakerAccessibilityMonitor = MeetingSpeakerAccessibilityMonitor()
@@ -262,7 +265,7 @@ final class MeetingSession {
         let owner = await ownerRecognitionProvider?()?.token
         return accessibility == speakerAccessibilityAuthorization && owner == ownerRecognitionContext?.token
     }
-    private var microphoneLabel: String { config.enableMeetingOwnerRecognition || config.diarizeMicrophoneAudio ? "Microphone" : "You" }
+    private var microphoneLabel: String { config.enableLiveSpeakerLabels || config.enableMeetingOwnerRecognition || config.diarizeMicrophoneAudio ? "Microphone" : "You" }
     private func speakerAudioClock(microphone: Bool = false) -> Double? {
         chunkRotationQueue.sync {
             guard capturePhase == .capturing, let last = microphone ? lastMicSampleUptime : lastSystemSampleUptime,
@@ -466,6 +469,13 @@ final class MeetingSession {
 
         try Task.checkCancellation()
         guard !captureLifecycle.isEnding else { throw CancellationError() }
+        if config.enableLiveSpeakerLabels {
+            let epoch = UUID()
+            await transcriptionCoordinator.beginLiveSpeakerEpoch(epoch)
+            liveSpeakerFeed = MeetingLiveSpeakerFeed(epoch: epoch,
+                infer: { [transcriptionCoordinator] window in try await transcriptionCoordinator.inferLiveSpeakers(epoch: epoch, window: window) },
+                publish: { [weak self] state in self?.onLiveSpeakerState?(state) })
+        }
         // The controller owns failure disposition; an explicit Stop may already
         // be saving this session when a cancelled startup continuation returns.
         try chunkRotationQueue.sync {
@@ -705,6 +715,7 @@ final class MeetingSession {
             }
         }
         guard shouldPause else { return }
+        liveSpeakerFeed?.pause()
         systemAudioWatchdog.suspendVerification()
 
         Task { await speakerAccessibilityMonitor.breakContinuity() }
@@ -745,6 +756,7 @@ final class MeetingSession {
     }
 
     private func discardPipeline() {
+        if let feed = liveSpeakerFeed { Task { await feed.finish(); await transcriptionCoordinator.endLiveSpeakerEpoch(feed.epoch) } }
         Task { _ = await speakerAccessibilityMonitor.stop() }
         Task { await screenContextCollector.stopAndDrain() }
         let (rawRecorder, systemRecorder, micDiarizationRecorder) = chunkRotationQueue.sync {
@@ -783,6 +795,10 @@ final class MeetingSession {
     }
 
     func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+        if let feed = liveSpeakerFeed {
+            await feed.finish()
+            Task { await transcriptionCoordinator.endLiveSpeakerEpoch(feed.epoch) }
+        }
         let accessibilityTimeline = await speakerAccessibilityMonitor.stop()
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
@@ -1006,7 +1022,8 @@ final class MeetingSession {
             micTurns: micSegments,
             systemSegments: systemSegments,
             diarizationSegments: diarizationSegments,
-            micDiarizationSegments: micDiarizationSegments
+            micDiarizationSegments: micDiarizationSegments,
+            preserveSingleMicSpeakerIdentity: config.enableMeetingOwnerRecognition
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
@@ -1019,7 +1036,7 @@ final class MeetingSession {
             microphoneIdentityRequired: config.enableMeetingOwnerRecognition || config.diarizeMicrophoneAudio
         )
 
-        let activities = protectedTranscriptInputs.diarizationSegments.map {
+        let activities = (protectedTranscriptInputs.diarizationSegments ?? []).map {
             MeetingSpeakerActivity(key: .init(epoch: speakerState.epoch, channel: .system, clusterID: $0.speakerId), start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
         }
         var accessibilitySelfKeys: Set<MeetingSpeakerKey> = []
@@ -1246,6 +1263,7 @@ final class MeetingSession {
                 self.commitMicPartialSegment(id: retireID)
                 guard !resolvedSegments.isEmpty else { return }
                 self.onChunkTranscribed?(resolvedSegments, self.microphoneLabel)
+                await self.appendLiveSpeakerTurns(resolvedSegments, channel: .microphone)
             }
         } else {
             task.cancel()
@@ -1339,6 +1357,7 @@ final class MeetingSession {
                 self.commitSystemPartialSegment(id: retireID)
                 guard !resolvedSegments.isEmpty else { return }
                 self.onChunkTranscribed?(resolvedSegments, "Others")
+                await self.appendLiveSpeakerTurns(resolvedSegments, channel: .system)
             }
         } else {
             task.cancel()
@@ -1456,6 +1475,8 @@ final class MeetingSession {
             self.micRecoveryCoordinator.process(healthSnapshot)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
+            let speakerStart = self.systemChunkTimingTracker.elapsedSampleIndex ?? 0
+            self.liveSpeakerFeed?.appendPCM(samples.map { Float($0) / 32767 }, channel: .system, startSample: speakerStart)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
             self.lastSystemSampleUptime = ProcessInfo.processInfo.systemUptime
 
@@ -1489,9 +1510,22 @@ final class MeetingSession {
         retainedRecordingWriter?.appendMic(cleanedInt16)
         rawMicChunkRecorder?.append(cleanedInt16)
         micDiarizationRecorder?.append(cleanedInt16)
+        liveSpeakerFeed?.appendPCM(cleanedFloat, channel: .microphone, startSample: chunkTimingTracker.elapsedSampleIndex ?? 0)
         chunkTimingTracker.append(sampleCount: cleanedInt16.count)
         lastMicSampleUptime = ProcessInfo.processInfo.systemUptime
         diagnostics?.appendCleanedMicSamples(cleanedInt16)
+    }
+
+    private func appendLiveSpeakerTurns(_ segments: [SpeechSegment], channel: MeetingSpeakerKey.Channel) async {
+        guard let feed = liveSpeakerFeed, let startTime else { return }
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "HH:mm:ss"
+        let turns = segments.compactMap { segment -> MeetingSpeakerTurn? in
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return .init(speaker: .init(epoch: feed.epoch, channel: channel, clusterID: "pending"),
+                timestamp: formatter.string(from: startTime.addingTimeInterval(segment.start)), start: segment.start, end: segment.end, text: text)
+        }
+        await feed.appendTurns(turns, channel: channel)
     }
 
     private func transcribeMicChunk(

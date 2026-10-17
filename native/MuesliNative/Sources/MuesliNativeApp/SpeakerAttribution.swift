@@ -29,10 +29,13 @@ enum SpeakerAttribution {
     /// The single "is the room really multi-speaker" decision for the mic channel.
     /// nil when the room effectively had one voice (the mic stays "You");
     /// otherwise only the significant speakers' segments.
-    static func localDiarization(from micDiarizationSegments: [TimedSpeakerSegment]?) -> [TimedSpeakerSegment]? {
+    static func localDiarization(
+        from micDiarizationSegments: [TimedSpeakerSegment]?,
+        preserveSingleSpeakerIdentity: Bool = false
+    ) -> [TimedSpeakerSegment]? {
         guard let micDiarizationSegments else { return nil }
         let speakerIDs = significantSpeakerIDs(in: micDiarizationSegments)
-        guard speakerIDs.count > 1 else { return nil }
+        guard speakerIDs.count > 1 || (preserveSingleSpeakerIdentity && speakerIDs.count == 1) else { return nil }
         return micDiarizationSegments.filter { speakerIDs.contains($0.speakerId) }
     }
 

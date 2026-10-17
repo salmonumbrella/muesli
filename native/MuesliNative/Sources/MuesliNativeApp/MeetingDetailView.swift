@@ -75,7 +75,9 @@ private struct LiveTranscriptSection: View {
             ),
             partialYou: appState.liveMeetingPartialYou,
             partialOthers: appState.liveMeetingPartialOthers,
-            microphoneLabel: appState.liveMeetingMicrophoneLabel
+            speakerState: appState.liveMeetingSpeakerState,
+            microphoneLabel: appState.liveMeetingMicrophoneLabel,
+            transcriptPrefix: transcriptPrefix
         )
     }
 }
@@ -2319,6 +2321,7 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     private static func isLikelySpeakerLabel(_ label: String) -> Bool {
         guard !label.isEmpty, label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Microphone") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Unknown speaker") == .orderedSame { return true }

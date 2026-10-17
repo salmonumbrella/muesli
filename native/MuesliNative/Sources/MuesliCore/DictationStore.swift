@@ -295,9 +295,10 @@ public final class DictationStore {
                 summary_stale = MAX(summary_stale, excluded.summary_stale);
             UPDATE local_meeting_speaker_state SET authoritative = 0 WHERE meeting_id = NEW.id;
         END;
-        CREATE TRIGGER IF NOT EXISTS local_meeting_speaker_capture_restarted
+        DROP TRIGGER IF EXISTS local_meeting_speaker_capture_restarted;
+        CREATE TRIGGER local_meeting_speaker_capture_restarted
         AFTER UPDATE OF meeting_status ON meetings
-        WHEN NEW.meeting_status IN ('recording', 'processing') AND OLD.meeting_status != NEW.meeting_status
+        WHEN NEW.meeting_status = 'recording' AND OLD.meeting_status != NEW.meeting_status
         BEGIN
             INSERT INTO local_meeting_transcript_versions(meeting_id, generation) VALUES (NEW.id, 1)
             ON CONFLICT(meeting_id) DO UPDATE SET generation = generation + 1;

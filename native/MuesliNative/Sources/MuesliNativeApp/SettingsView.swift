@@ -1148,6 +1148,7 @@ struct SettingsView: View {
                 description: "Show recent transcript beside the waveform.",
                 controlWidth: meetingControlWidth
             ) {
+                settingsControl("meeting_live_speakers")
                 settingsControl("meeting_owner_recognition")
                 TextField("Your display name (optional)", text: Binding(
                     get: { appState.config.meetingOwnerDisplayName },
