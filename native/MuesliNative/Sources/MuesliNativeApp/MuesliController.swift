@@ -395,6 +395,49 @@ public final class MuesliController: NSObject {
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     let transcriptionCoordinator = TranscriptionCoordinator()
+    lazy var ownerVoice = OwnerVoiceController(coordinator: transcriptionCoordinator,
+        supportDirectory: configStore.supportDirectory(),
+        captureIsActive: { [weak self] in
+            guard let self else { return true }
+            return self.isInteractiveAudioActivityInProgress || self.isMeetingRecording() || self.isStartingMeetingRecording
+        },
+        onChange: { [weak self] _ in self?.ownerVoiceProfileDidChange() })
+    private var ownerRecognitionGeneration = UUID()
+    private var ownerRecognitionState: String?
+    private var ownerInvalidationTask: Task<Void, Never>?
+
+    func currentOwnerRecognitionContext() -> MeetingOwnerRecognitionContext? {
+        let ax = currentMeetingSpeakerAuthorization()?.uuidString ?? ""
+        let state = "\(config.diarizeMicrophoneAudio)/\(config.enableMeetingOwnerRecognition)/\(ownerVoice.profile?.id.uuidString ?? "")/\(config.meetingOwnerDisplayName)/\(ax)"
+        if ownerRecognitionState != state { ownerRecognitionState = state; ownerRecognitionGeneration = UUID() }
+        guard config.enableMeetingOwnerRecognition, config.diarizeMicrophoneAudio else { return nil }
+        return .init(token: ownerRecognitionGeneration, profile: ownerVoice.profile, name: config.meetingOwnerDisplayName)
+    }
+    private func ownerVoiceProfileDidChange() {
+        ownerRecognitionGeneration = UUID()
+        ownerInvalidationTask?.cancel()
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let currentProfile = config.enableMeetingOwnerRecognition ? ownerVoice.profile?.id : nil
+        ownerInvalidationTask = Task { [weak self] in
+            do {
+                let work = Task.detached(priority: .utility) {
+                    let store = DictationStore(databaseURL: databaseURL)
+                    for id in try store.speakerStateMeetingIDs() {
+                        try Task.checkCancellation()
+                        guard let snapshot = try store.meetingSpeakerSnapshot(id: id),
+                              snapshot.state.voiceProfileID != nil, snapshot.state.voiceProfileID != currentProfile else { continue }
+                        var state = snapshot.state; state.removeSelfEvidence()
+                        try Task.checkCancellation()
+                        _ = try store.updateMeetingSpeakerState(id: id, state: state, expected: snapshot)
+                    }
+                }
+                try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
+                guard let self, !Task.isCancelled else { return }
+                self.scheduleICloudSyncAfterLocalChange(); self.syncAppState(); self.historyWindowController?.reload()
+            } catch is CancellationError { return }
+              catch { self?.presentErrorAlert(title: "Speaker labels", message: "Some voice-derived labels could not be updated. Reopen the meeting to retry.") }
+        }
+    }
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
@@ -698,6 +741,8 @@ public final class MuesliController: NSObject {
         self.indicator = FloatingIndicatorController(configStore: configStore)
         ComputerUseCursorOverlay.shared.attachIndicator(self.indicator)
         super.init()
+        _ = ownerVoice
+        ownerVoiceProfileDidChange()
         dictationAudioSessionManager.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleDictationAudioSessionEvent(event)
@@ -1118,6 +1163,7 @@ public final class MuesliController: NSObject {
         dictationAudioSessionManager.cancel(reason: "shutdown")
         computerUseAudioSessionManager.cancel(reason: "shutdown")
         await syncEngineCancellationTask?.value
+        ownerVoice.cancel()
         await transcriptionCoordinator.shutdown()
         indicator.close()
         CoreAudioSystemRecorder.cleanupStaleDevices()
@@ -1656,8 +1702,14 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousOwnerRecognition = config.enableMeetingOwnerRecognition
+        let previousOwnerName = config.meetingOwnerDisplayName
         let previousSpeakerAccessibility = config.enableMeetingSpeakerAccessibility
         mutate(&config)
+        if previousOwnerRecognition != config.enableMeetingOwnerRecognition || previousOwnerName != config.meetingOwnerDisplayName {
+            ownerRecognitionGeneration = UUID()
+            if !config.enableMeetingOwnerRecognition { ownerVoiceProfileDidChange() }
+        }
         if previousSpeakerAccessibility != config.enableMeetingSpeakerAccessibility {
             meetingSpeakerAuthorizationGeneration = UUID()
             _ = currentMeetingSpeakerAuthorization()
@@ -7540,9 +7592,11 @@ public final class MuesliController: NSObject {
             routeSnapshotProvider: { routingController.meetingInputRouteSnapshot() }
         )
         microphone.preferredInputDeviceID = route.preferredInputDeviceID
+        ownerVoice.cancelForCaptureStart()
         let session = MeetingSession(title: title, calendarEventID: calendarEventID,
             backend: backend, runtime: runtime, config: config, templateSnapshot: templateSnapshot,
             transcriptionCoordinator: transcriptionCoordinator, meetingMicRecorder: microphone)
+        session.ownerRecognitionProvider = { [weak self] in await MainActor.run { self?.currentOwnerRecognitionContext() } }
         session.speakerAccessibilityAuthorizationProvider = { [weak self] in
             await MainActor.run { self?.currentMeetingSpeakerAuthorization() }
         }
@@ -7655,7 +7709,8 @@ public final class MuesliController: NSObject {
                         self.indicator.updateMeetingTranscript(
                             transcript: self.appState.liveMeetingTranscript,
                             partialYou: self.appState.liveMeetingPartialYou,
-                            partialOthers: self.appState.liveMeetingPartialOthers
+                            partialOthers: self.appState.liveMeetingPartialOthers,
+                            microphoneLabel: self.appState.liveMeetingMicrophoneLabel
                         )
                     }
                 }
@@ -7666,7 +7721,7 @@ public final class MuesliController: NSObject {
                             ownerID: meetingID,
                             generation: transcriptGeneration
                         ) else { return }
-                        if speaker == "You" {
+                        if speaker == "You" || speaker == "Microphone" {
                             guard self.appState.liveMeetingPartialYou != tail else { return }
                             self.appState.liveMeetingPartialYou = tail
                         } else {
@@ -7679,10 +7734,12 @@ public final class MuesliController: NSObject {
                         self.indicator.updateMeetingTranscript(
                             transcript: self.appState.liveMeetingTranscript,
                             partialYou: self.appState.liveMeetingPartialYou,
-                            partialOthers: self.appState.liveMeetingPartialOthers
+                            partialOthers: self.appState.liveMeetingPartialOthers,
+                            microphoneLabel: self.appState.liveMeetingMicrophoneLabel
                         )
                     }
                 }
+                appState.liveMeetingMicrophoneLabel = (config.enableMeetingOwnerRecognition || config.diarizeMicrophoneAudio) ? "Microphone" : "You"
                 appState.liveMeetingTranscriptOwnerID = meetingID
                 liveMeetingTranscriptGeneration = transcriptGeneration
                 appState.liveMeetingTranscript = ""
@@ -8478,6 +8535,7 @@ public final class MuesliController: NSObject {
         preparedRecordingSave: PreparedMeetingRecordingSave
     ) throws -> CompletedMeetingPersistenceResult {
         let result = result.validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization())
+            .validatingOwnerAuthorization(currentOwnerRecognitionContext()?.token)
         let meetingID: Int64
         let savedRecordingPath = preparedRecordingSave.path
         let recordingSaveError = preparedRecordingSave.error
@@ -8657,6 +8715,9 @@ public final class MuesliController: NSObject {
               let prior = pendingResumePriorTranscript[meetingID] else {
             return result
         }
+        let result = result.validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization())
+            .validatingOwnerAuthorization(currentOwnerRecognitionContext()?.token)
+        let fallback = MeetingResumePolicy.combinedResumeTranscript(prior: prior, new: result.speakerAuthorizationFallbackTranscript ?? result.rawTranscript)
         let manualNotes = manualNotesForLiveMeeting(id: meetingID)
         let combined = MeetingResumePolicy.combinedResumeTranscript(
             prior: prior,
@@ -8679,11 +8740,18 @@ public final class MuesliController: NSObject {
                 durationSeconds: accumulatedDuration,
                 rawTranscript: combined,
                 formattedNotes: originalMeeting?.formattedNotes ?? result.formattedNotes,
-                visualContext: mergedVisualContext
+                visualContext: mergedVisualContext,
+                fallbackTranscript: fallback
             )
         }
 
         let participantNames = await summaryParticipantNames(meetingID: meetingID)
+        let current = result.validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization())
+            .validatingOwnerAuthorization(currentOwnerRecognitionContext()?.token)
+        guard current.rawTranscript == result.rawTranscript else {
+            return current.overriding(startTime: originalStart, durationSeconds: accumulatedDuration,
+                rawTranscript: fallback, formattedNotes: current.formattedNotes, visualContext: mergedVisualContext, fallbackTranscript: fallback)
+        }
         let regeneratedNotes: String
         do {
             regeneratedNotes = try await MeetingSummaryClient.summarize(
@@ -8710,8 +8778,10 @@ public final class MuesliController: NSObject {
             durationSeconds: accumulatedDuration,
             rawTranscript: combined,
             formattedNotes: regeneratedNotes,
-            visualContext: mergedVisualContext
-        )
+            visualContext: mergedVisualContext,
+            fallbackTranscript: fallback
+        ).validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization())
+            .validatingOwnerAuthorization(currentOwnerRecognitionContext()?.token)
     }
 
     private func meetingRecordingSavePlan(
@@ -9740,6 +9810,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleQuilStart() {
+        ownerVoice.cancelForCaptureStart()
         guard canStartQuil else { return }
         indicator.instructionMode = .quill
         quilStartedAt = Date()
@@ -9772,6 +9843,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleQuilToggleStart() {
+        ownerVoice.cancelForCaptureStart()
         guard canStartQuil else {
             quilHotkeyMonitor.cancelToggleMode()
             return
@@ -10185,6 +10257,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleComputerUseStart() {
+        ownerVoice.cancelForCaptureStart()
         guard canStartComputerUseCommand else { return }
         fputs("[cua] recording start\n", stderr)
         indicator.instructionMode = .computerUse
@@ -10203,6 +10276,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleComputerUseToggleStart() {
+        ownerVoice.cancelForCaptureStart()
         guard canStartComputerUseCommand else {
             computerUseHotkeyMonitor.cancelToggleMode()
             return
@@ -10841,6 +10915,7 @@ public final class MuesliController: NSObject {
     }
 
     private func beginDictationOutput(mode: DictationOutputMode? = nil) {
+        ownerVoice.cancelForCaptureStart()
         currentDictationOutputMode = mode ?? defaultDictationOutputMode
         appState.isVoiceNoteRecording = currentDictationOutputMode == .voiceNote
     }
@@ -11333,6 +11408,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleStart() {
+        ownerVoice.cancelForCaptureStart()
         if shouldRejectDictationForComputerUseActivity() { return }
         guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
@@ -11520,6 +11596,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) -> Bool {
+        ownerVoice.cancelForCaptureStart()
         if shouldRejectDictationForComputerUseActivity() { return false }
         guard canBeginDictationInteraction else { return false }
         guard ensureDictationBackendReady() else { return false }

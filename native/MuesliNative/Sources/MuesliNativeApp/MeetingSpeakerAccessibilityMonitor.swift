@@ -10,13 +10,13 @@ actor MeetingSpeakerAccessibilityMonitor {
     private var continuity = UUID()
     private var timeline = MeetingSpeakerTimeline()
 
-    func start(authorization: UUID, token: @escaping () async -> UUID?, clock: @escaping () -> Double?) {
+    func start(authorization: UUID, token: @escaping () async -> UUID?, clock: @escaping () -> Double?, microphoneClock: @escaping () -> Double?) {
         task?.cancel(); generation = UUID(); continuity = UUID(); timeline = .init()
         let generation = generation
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.poll(generation: generation, authorization: authorization, token: token, clock: clock)
+                await self.poll(generation: generation, authorization: authorization, token: token, clock: clock, microphoneClock: microphoneClock)
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -25,8 +25,9 @@ actor MeetingSpeakerAccessibilityMonitor {
     func stop() -> MeetingSpeakerTimeline {
         task?.cancel(); task = nil; generation = UUID(); return timeline
     }
-    private func poll(generation: UUID, authorization: UUID, token: () async -> UUID?, clock: () -> Double?) async {
+    private func poll(generation: UUID, authorization: UUID, token: () async -> UUID?, clock: () -> Double?, microphoneClock: () -> Double?) async {
         guard self.generation == generation, await token() == authorization, let start = clock() else { breakContinuity(); return }
+        let micStart = microphoneClock()
         let apps = await MainActor.run {
             NSWorkspace.shared.runningApplications.compactMap { app -> RunningAppSnapshot? in
                 guard let id = app.bundleIdentifier else { return nil }
@@ -38,7 +39,10 @@ actor MeetingSpeakerAccessibilityMonitor {
         guard await token() == authorization, self.generation == generation, !Task.isCancelled,
               let end = clock(), end >= start, end - start <= 0.5 else { breakContinuity(); return }
         guard timeline.observations.count < 14_400 else { timeline.incomplete = true; return }
-        timeline.observations.append(.init(time: end, continuity: continuity.uuidString, frame: frame))
+        let micEnd = microphoneClock()
+        let micTime: Double?
+        if let micStart, let micEnd, micEnd >= micStart, micEnd - micStart <= 0.5 { micTime = micEnd } else { micTime = nil }
+        timeline.observations.append(.init(time: end, continuity: continuity.uuidString, frame: frame, microphoneTime: micTime))
     }
 }
 

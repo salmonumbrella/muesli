@@ -26,13 +26,14 @@ enum TranscriptFormatter {
     static func structured(
         micSegments: [SpeechSegment], systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?, micDiarizationSegments: [TimedSpeakerSegment]? = nil, meetingStart: Date,
-        conservativeSpeakerAttribution: Bool = false, epoch: UUID = UUID(),
+        conservativeSpeakerAttribution: Bool = false, epoch: UUID = UUID(), microphoneIdentityRequired: Bool = false,
         systemChannel: MeetingSpeakerKey.Channel = .system
     ) -> MeetingSpeakerState {
         var identities: [String: MeetingSpeaker] = [:]
         let micKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "source")
         if !micSegments.isEmpty {
-            identities["You"] = MeetingSpeaker(key: micKey, rank: 1, fallbackLabel: "You", isSelf: true)
+            let label = microphoneIdentityRequired ? "Microphone" : "You"
+            identities[label] = MeetingSpeaker(key: micKey, rank: 1, fallbackLabel: label, isSelf: !microphoneIdentityRequired)
         }
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
@@ -41,8 +42,9 @@ enum TranscriptFormatter {
         // A single mic voice is almost always the device owner on a call; only
         // split the mic channel when the room had several significant voices.
         // Same rule as the reconciler, so turns it kept apart get distinct labels.
-        if let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments) {
-            identities.removeValue(forKey: "You")
+        let local = microphoneIdentityRequired ? micDiarizationSegments.flatMap { $0.isEmpty ? nil : $0 } : SpeakerAttribution.localDiarization(from: micDiarizationSegments)
+        if let localDiarization = local {
+            identities.removeValue(forKey: "You"); identities.removeValue(forKey: "Microphone")
             let micSpeakerLabelMap = speakerLabelMap(for: localDiarization, prefix: "Local speaker")
             for (id, label) in micSpeakerLabelMap {
                 identities[label] = MeetingSpeaker(key: .init(epoch: epoch, channel: .microphone, clusterID: id),
@@ -58,7 +60,7 @@ enum TranscriptFormatter {
                 return TaggedSegment(segment: segment, speaker: speaker)
             }
         } else {
-            taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: "You") }
+            taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: microphoneIdentityRequired ? "Microphone" : "You") }
         }
 
         let taggedSystem: [TaggedSegment]

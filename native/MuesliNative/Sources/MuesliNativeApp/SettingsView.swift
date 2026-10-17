@@ -1148,6 +1148,13 @@ struct SettingsView: View {
                 description: "Show recent transcript beside the waveform.",
                 controlWidth: meetingControlWidth
             ) {
+                settingsControl("meeting_owner_recognition")
+                TextField("Your display name (optional)", text: Binding(
+                    get: { appState.config.meetingOwnerDisplayName },
+                    set: { value in controller.updateConfig { $0.meetingOwnerDisplayName = value } }))
+                OwnerVoiceSettingsView(voice: controller.ownerVoice, captureActive: appState.isMeetingRecording || appState.dictationState != .idle)
+                Text("Experimental. Voice matching requires validation with consented recordings on a Mac. Keep disabled until verified.")
+                    .font(.caption).foregroundStyle(.secondary)
                 settingsControl("meeting_ax_speakers")
                 Text("Experimental. Requires Accessibility access and verified meeting app layouts. Names are used only with consistent speaking evidence.")
                     .font(.caption).foregroundStyle(.secondary)

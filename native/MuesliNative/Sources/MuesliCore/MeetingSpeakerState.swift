@@ -25,6 +25,8 @@ public struct MeetingSpeaker: Codable, Equatable, Sendable, Identifiable {
     public let rank: Int
     public let fallbackLabel: String
     public var isAssignable: Bool
+    public var selfProvenance: MeetingSpeakerAssignment.Provenance? = nil
+    public var declinedSelf: Bool? = nil
     public var isSelf: Bool
     public var assignment: MeetingSpeakerAssignment?
     public var mergedInto: MeetingSpeakerKey? = nil
@@ -59,6 +61,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
     public var revision: Int64
     public var speakers: [MeetingSpeaker]
     public var turns: [MeetingSpeakerTurn]
+    public var voiceProfileID: UUID? = nil
     public var correctionHistory: [MeetingSpeakerCorrectionUndo]? = nil
     public init(epoch: UUID = UUID(), revision: Int64 = 0, speakers: [MeetingSpeaker] = [], turns: [MeetingSpeakerTurn] = []) {
         schemaVersion = 1; self.epoch = epoch; self.revision = revision
@@ -104,7 +107,8 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
         let reserved = Set((active.map(\.fallbackLabel) + ["You", "Others", "Multiple speakers", "Unknown speaker", "Microphone"]).map(Self.collisionKey))
         let requested = Set(active.compactMap { $0.assignment.map { Self.collisionKey(Self.safeLabel($0.name)) } })
         for speaker in active.sorted(by: { $0.rank == $1.rank ? $0.key.clusterID < $1.key.clusterID : $0.rank < $1.rank }) {
-            let base = speaker.assignment.map { Self.safeLabel($0.name) }.flatMap { $0.isEmpty ? nil : $0 } ?? speaker.fallbackLabel
+            let resolvedName = speaker.assignment.map { Self.safeLabel($0.name) }.flatMap { $0.isEmpty ? nil : $0 }
+            let base = speaker.isSelf ? resolvedName.map { "\($0) (You)" } ?? "You" : resolvedName ?? speaker.fallbackLabel
             var label = base
             var suffix = 2
             let namedReserved = speaker.assignment != nil && reserved.contains(Self.collisionKey(base))

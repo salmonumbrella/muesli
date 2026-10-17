@@ -5804,6 +5804,11 @@ public final class DictationStore {
 
 
 extension DictationStore {
+    public func speakerStateMeetingIDs() throws -> [Int64] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try speakerRows("SELECT meeting_id FROM local_meeting_speaker_state WHERE authoritative = 1", [], db: db).compactMap { $0.first.flatMap(Int64.init) }
+    }
+
     public func meetingTranscriptVersion(id: Int64) throws -> MeetingTranscriptVersion? {
         let db = try openDatabase(); defer { sqlite3_close(db) }
         return try speakerTranscriptVersion(id: id, db: db)

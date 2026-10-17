@@ -7,7 +7,7 @@ import SwiftUI
 import MuesliCore
 
 enum LiveTranscriptCopyContent {
-    static func text(transcript: String, partialYou: String, partialOthers: String) -> String {
+    static func text(transcript: String, partialYou: String, partialOthers: String, microphoneLabel: String = "You") -> String {
         var sections: [String] = []
         let committed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !committed.isEmpty {
@@ -19,7 +19,7 @@ enum LiveTranscriptCopyContent {
         }
         let you = partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
         if !you.isEmpty {
-            sections.append("You: \(you)")
+            sections.append("\(microphoneLabel): \(you)")
         }
         return sections.joined(separator: "\n")
     }
@@ -117,14 +117,15 @@ final class LiveTranscriptPresentationModel {
     var transcript = ""
     var partialYou = ""
     var partialOthers = ""
+    var microphoneLabel = "You"
     var messages: [TranscriptChatMessage] = []
 
     private var speakerState: MeetingSpeakerState?
 
-    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil) {
+    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil, microphoneLabel: String = "You") {
         let stateChanged = self.speakerState != speakerState
         guard self.transcript != transcript || self.partialYou != partialYou ||
-                self.partialOthers != partialOthers || stateChanged else { return }
+                self.partialOthers != partialOthers || self.microphoneLabel != microphoneLabel || stateChanged else { return }
         if transcript != self.transcript || stateChanged {
             if let speakerState, speakerState.isValid, speakerState.render() == transcript {
                 messages = TranscriptChatMessage.messages(from: transcript, speakerState: speakerState)
@@ -137,6 +138,7 @@ final class LiveTranscriptPresentationModel {
             self.transcript = transcript
             self.speakerState = speakerState
         }
+        self.microphoneLabel = microphoneLabel
         self.partialYou = partialYou
         self.partialOthers = partialOthers
     }
@@ -160,6 +162,7 @@ struct LiveTranscriptFeedView: View {
     var topPadding: CGFloat
     var bottomPadding: CGFloat
     var onOpen: (() -> Void)? = nil
+    var microphoneLabel: String = "You"
 
     private var trimmedPartialYou: String {
         partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -202,10 +205,10 @@ struct LiveTranscriptFeedView: View {
                 }
                 if !trimmedPartialYou.isEmpty {
                     LiveTranscriptBubble(
-                        speaker: "You",
+                        speaker: microphoneLabel,
                         timestamp: nil,
                         lines: [trimmedPartialYou],
-                        isUser: true,
+                        isUser: microphoneLabel == "You",
                         isPartial: true,
                         onOpen: onOpen
                     )
@@ -228,6 +231,7 @@ struct LiveTranscriptView: View {
     var partialYou: String = ""
     var partialOthers: String = ""
     var speakerState: MeetingSpeakerState? = nil
+    var microphoneLabel: String = "You"
     @State private var presentation = LiveTranscriptPresentationModel()
     @State private var didCopy = false
 
@@ -235,7 +239,7 @@ struct LiveTranscriptView: View {
         LiveTranscriptCopyContent.text(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers, microphoneLabel: microphoneLabel
         )
     }
 
@@ -249,7 +253,7 @@ struct LiveTranscriptView: View {
                         partialOthers: presentation.partialOthers,
                         horizontalPadding: MuesliTheme.spacing16,
                         topPadding: 44,
-                        bottomPadding: MuesliTheme.spacing8
+                        bottomPadding: MuesliTheme.spacing8, microphoneLabel: microphoneLabel
                     )
                     .textSelection(.enabled)
                 }
@@ -258,7 +262,7 @@ struct LiveTranscriptView: View {
                         transcript: newTranscript,
                         partialYou: partialYou,
                         partialOthers: partialOthers,
-                        speakerState: speakerState
+                        speakerState: speakerState, microphoneLabel: microphoneLabel
                     )
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.15)) {
@@ -275,7 +279,7 @@ struct LiveTranscriptView: View {
                         transcript: transcript,
                         partialYou: new,
                         partialOthers: partialOthers,
-                        speakerState: speakerState
+                        speakerState: speakerState, microphoneLabel: microphoneLabel
                     )
                     if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -287,7 +291,7 @@ struct LiveTranscriptView: View {
                         transcript: transcript,
                         partialYou: partialYou,
                         partialOthers: new,
-                        speakerState: speakerState
+                        speakerState: speakerState, microphoneLabel: microphoneLabel
                     )
                     if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -296,14 +300,14 @@ struct LiveTranscriptView: View {
                 }
                 .onChange(of: speakerState) { _, _ in
                     presentation.update(transcript: transcript, partialYou: partialYou,
-                                        partialOthers: partialOthers, speakerState: speakerState)
+                                        partialOthers: partialOthers, speakerState: speakerState, microphoneLabel: microphoneLabel)
                 }
                 .onAppear {
                     presentation.update(
                         transcript: transcript,
                         partialYou: partialYou,
                         partialOthers: partialOthers,
-                        speakerState: speakerState
+                        speakerState: speakerState, microphoneLabel: microphoneLabel
                     )
                     DispatchQueue.main.async {
                         proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)

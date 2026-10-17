@@ -134,8 +134,8 @@ struct MeetingSpeakerEditorView: View {
                 TextField("Name for \(speaker.fallbackLabel)", text: Binding(
                     get: { names[speaker.key] ?? speaker.assignment?.name ?? "" }, set: { names[speaker.key] = $0 }))
                 Button("Apply name") { apply(.rename(speaker.key, names[speaker.key] ?? speaker.assignment?.name ?? "")) }.disabled(blocked)
-                Button("Reset name") { apply(.resetName(speaker.key)) }.disabled(blocked || speaker.assignment == nil)
-                if let assignment = speaker.assignment, assignment.provenance != .manual {
+                Button("Reset name") { apply(.resetName(speaker.key)) }.disabled(blocked || (speaker.assignment == nil && speaker.selfProvenance == nil))
+                if speaker.selfProvenance != nil || (speaker.assignment != nil && speaker.assignment?.provenance != .manual) {
                     Button("Reject suggestion") { apply(.declineName(speaker.key)) }.disabled(blocked)
                 }
             }

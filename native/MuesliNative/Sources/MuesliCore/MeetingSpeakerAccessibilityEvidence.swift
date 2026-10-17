@@ -93,8 +93,9 @@ public enum MeetingSpeakerSources {
 public struct MeetingSpeakerObservation: Sendable {
     public let time: Double
     public let continuity: String
+    public let microphoneTime: Double?
     public let frame: MeetingSpeakerFrame
-    public init(time: Double, continuity: String, frame: MeetingSpeakerFrame) { self.time = time; self.continuity = continuity; self.frame = frame }
+    public init(time: Double, continuity: String, frame: MeetingSpeakerFrame, microphoneTime: Double? = nil) { self.time = time; self.continuity = continuity; self.frame = frame; self.microphoneTime = microphoneTime }
 }
 public struct MeetingSpeakerActivity: Sendable {
     public let key: MeetingSpeakerKey
@@ -110,10 +111,12 @@ public struct MeetingSpeakerTimeline: Sendable {
     public var observations: [MeetingSpeakerObservation]
     public var incomplete: Bool
     public init(observations: [MeetingSpeakerObservation] = [], incomplete: Bool = false) { self.observations = observations; self.incomplete = incomplete }
-    public func assignments(activities: [MeetingSpeakerActivity]) -> MeetingSpeakerEvidenceAssignments {
+    public func assignments(activities: [MeetingSpeakerActivity], channel: MeetingSpeakerKey.Channel = .system) -> MeetingSpeakerEvidenceAssignments {
+        if channel == .microphone, observations.contains(where: { $0.microphoneTime == nil }) { return .init() }
+        let observations = channel == .microphone ? self.observations.map { MeetingSpeakerObservation(time: $0.microphoneTime ?? .nan, continuity: $0.continuity, frame: $0.frame) } : self.observations
         guard !incomplete, observations.count >= 3 else { return .init() }
         guard zip(observations, observations.dropFirst()).allSatisfy({ pair in pair.0.time.isFinite && pair.1.time.isFinite && pair.1.time > pair.0.time }) else { return .init() }
-        let valid = activities.filter { $0.key.channel == .system && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start }
+        let valid = activities.filter { $0.key.channel == channel && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start }
         let grouped = Dictionary(grouping: valid, by: \.key)
         struct Vote { var seconds = 0.0; var polls: Set<Int> = []; var person: MeetingSpeakerParticipant }
         var winners: [MeetingSpeakerKey: Vote] = [:]

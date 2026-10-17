@@ -74,7 +74,8 @@ private struct LiveTranscriptSection: View {
                 new: appState.liveMeetingTranscript
             ),
             partialYou: appState.liveMeetingPartialYou,
-            partialOthers: appState.liveMeetingPartialOthers
+            partialOthers: appState.liveMeetingPartialOthers,
+            microphoneLabel: appState.liveMeetingMicrophoneLabel
         )
     }
 }

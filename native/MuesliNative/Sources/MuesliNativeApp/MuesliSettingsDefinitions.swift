@@ -336,6 +336,12 @@ extension MuesliController {
             self.updatePostProcessorModel($0, for: .hosted(.openRouter))
         }
 
+        toggle("meeting_owner_recognition", "Recognize my voice in meetings (experimental)", \.enableMeetingOwnerRecognition,
+               unavailable: { enabled in enabled && !self.config.diarizeMicrophoneAudio ? "Enable microphone diarization first." : nil },
+               apply: { enabled in
+                   guard !enabled || self.config.diarizeMicrophoneAudio else { throw MuesliSettings.Failure.rejected("Enable microphone diarization first.") }
+                   self.updateConfig { $0.enableMeetingOwnerRecognition = enabled }
+               })
         toggle("meeting_ax_speakers", "Meeting app speaker names (experimental)", \.enableMeetingSpeakerAccessibility,
                unavailable: { enabled in enabled && !AXIsProcessTrusted() ? "Allow Accessibility in System Settings first." : nil },
                apply: { enabled in

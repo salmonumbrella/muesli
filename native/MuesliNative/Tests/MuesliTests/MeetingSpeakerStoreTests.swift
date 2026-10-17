@@ -9,6 +9,7 @@ struct MeetingSpeakerStoreTests {
         let (store, id, state) = try fixture()
         let version = try #require(store.meetingTranscriptVersion(id: id))
         #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        #expect(try store.speakerStateMeetingIDs().contains(id))
         let snapshot = try #require(store.meetingSpeakerSnapshot(id: id))
         var renamed = snapshot.state
         _ = renamed.assign(.init(name: "長い名前: Example", provenance: .manual), to: state.speakers[0].key)
