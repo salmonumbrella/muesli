@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import CloudKit
 import CoreAudio
@@ -1621,6 +1622,17 @@ public final class MuesliController: NSObject {
         normalizeMeetingTranscriptionSelectionForAvailability()
     }
 
+    private var meetingSpeakerAuthorizationGeneration = UUID()
+    private var meetingSpeakerAuthorizationState: (enabled: Bool, trusted: Bool)?
+    func currentMeetingSpeakerAuthorization() -> UUID? {
+        let state = (enabled: config.enableMeetingSpeakerAccessibility, trusted: AXIsProcessTrusted())
+        if meetingSpeakerAuthorizationState?.enabled != state.enabled || meetingSpeakerAuthorizationState?.trusted != state.trusted {
+            meetingSpeakerAuthorizationGeneration = UUID()
+            meetingSpeakerAuthorizationState = state
+        }
+        return state.enabled && state.trusted ? meetingSpeakerAuthorizationGeneration : nil
+    }
+
     func updateConfig(
         iCloudDisableCompletionStatus: String? = nil,
         _ mutate: (inout AppConfig) -> Void
@@ -1639,7 +1651,12 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousSpeakerAccessibility = config.enableMeetingSpeakerAccessibility
         mutate(&config)
+        if previousSpeakerAccessibility != config.enableMeetingSpeakerAccessibility {
+            meetingSpeakerAuthorizationGeneration = UUID()
+            _ = currentMeetingSpeakerAuthorization()
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             activeMeetingSession?.stopStreamingPartials()
             clearLiveMeetingPartialTails()
@@ -7521,6 +7538,9 @@ public final class MuesliController: NSObject {
         let session = MeetingSession(title: title, calendarEventID: calendarEventID,
             backend: backend, runtime: runtime, config: config, templateSnapshot: templateSnapshot,
             transcriptionCoordinator: transcriptionCoordinator, meetingMicRecorder: microphone)
+        session.speakerAccessibilityAuthorizationProvider = { [weak self] in
+            await MainActor.run { self?.currentMeetingSpeakerAuthorization() }
+        }
         let owner = ObjectIdentifier(session)
         session.onCaptureQuiesced = { [weak self] in
             Task { @MainActor [weak self] in self?.completeMeetingCaptureShutdown(owner: owner) }
@@ -8452,6 +8472,7 @@ public final class MuesliController: NSObject {
         existingMeetingID: Int64? = nil,
         preparedRecordingSave: PreparedMeetingRecordingSave
     ) throws -> CompletedMeetingPersistenceResult {
+        let result = result.validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization())
         let meetingID: Int64
         let savedRecordingPath = preparedRecordingSave.path
         let recordingSaveError = preparedRecordingSave.error

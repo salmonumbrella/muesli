@@ -91,14 +91,14 @@ final class MeetingChunkCollector {
 }
 
 struct MeetingSessionResult {
-    let title: String
+    var title: String
     let originalTitle: String
     let calendarEventID: String?
     let startTime: Date
     let endTime: Date
     let durationSeconds: Double
-    let rawTranscript: String
-    let formattedNotes: String
+    var rawTranscript: String
+    var formattedNotes: String
     let retainedRecordingURL: URL?
     let retainedRecordingError: Error?
     let systemRecordingURL: URL?
@@ -106,9 +106,24 @@ struct MeetingSessionResult {
     var visualContext: String? = nil
     var speakerState: MeetingSpeakerState? = nil
     var summaryIsCurrent: Bool = true
+    var speakerAccessibilityAuthorization: UUID? = nil
+    var accessibilitySelfKeys: Set<MeetingSpeakerKey> = []
 }
 
 extension MeetingSessionResult {
+    func validatingAccessibilityAuthorization(_ current: UUID?) -> Self {
+        guard let authorization = speakerAccessibilityAuthorization, authorization != current else { return self }
+        var copy = self
+        copy.speakerState?.removeAccessibilityAssignments()
+        if let state = copy.speakerState { copy.rawTranscript = state.render() }
+        copy.title = originalTitle
+        copy.formattedNotes = "Speaker evidence changed. Update notes from the saved transcript."
+        copy.summaryIsCurrent = false
+        copy.speakerAccessibilityAuthorization = nil
+        copy.accessibilitySelfKeys = []
+        return copy
+    }
+
     /// Returns a copy with transcript, notes, and optional timing overrides.
     /// Used by the resume-recording flow to persist the merged transcript while
     /// keeping the original meeting date and accumulating only recorded duration.
@@ -201,6 +216,17 @@ final class MeetingSession {
     private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
     private var chunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkTimingTracker = MeetingChunkTimingTracker()
+    private var lastSystemSampleUptime: Double?
+    private let speakerAccessibilityMonitor = MeetingSpeakerAccessibilityMonitor()
+    private var speakerAccessibilityAuthorization: UUID?
+    var speakerAccessibilityAuthorizationProvider: (() async -> UUID?)?
+    private func speakerAudioClock() -> Double? {
+        chunkRotationQueue.sync {
+            guard capturePhase == .capturing, let lastSystemSampleUptime,
+                  ProcessInfo.processInfo.systemUptime - lastSystemSampleUptime <= 1.5 else { return nil }
+            return systemChunkTimingTracker.elapsedTimeSeconds
+        }
+    }
     private var systemChunkRecorder: PCMChunkRecorder?
     var onProgress: ((MeetingProcessingStage) -> Void)?
     var onCaptureQuiesced: (() -> Void)? {
@@ -419,6 +445,13 @@ final class MeetingSession {
             // OCR screenshots are safe when using CoreAudio tap (no SCStream conflict)
             await screenContextCollector.startPeriodicCapture(useOCR: config.useCoreAudioTap)
         }
+        if config.enableMeetingSpeakerAccessibility,
+           let authorization = await speakerAccessibilityAuthorizationProvider?() {
+            speakerAccessibilityAuthorization = authorization
+            await speakerAccessibilityMonitor.start(authorization: authorization,
+                token: { [weak self] in await self?.speakerAccessibilityAuthorizationProvider?() },
+                clock: { [weak self] in self?.speakerAudioClock() })
+        }
         setupStreamingPartialsIfAvailable()
     }
 
@@ -623,6 +656,7 @@ final class MeetingSession {
         guard shouldPause else { return }
         systemAudioWatchdog.suspendVerification()
 
+        Task { await speakerAccessibilityMonitor.breakContinuity() }
         Task { await screenContextCollector.setPaused(true) }
         fputs("[meeting] recording paused\n", stderr)
     }
@@ -637,6 +671,7 @@ final class MeetingSession {
         guard shouldResume else { return }
 
         systemAudioWatchdog.noteRouteChange()
+        Task { await speakerAccessibilityMonitor.breakContinuity() }
         Task { await screenContextCollector.setPaused(false) }
         fputs("[meeting] recording resumed\n", stderr)
     }
@@ -659,6 +694,7 @@ final class MeetingSession {
     }
 
     private func discardPipeline() {
+        Task { _ = await speakerAccessibilityMonitor.stop() }
         Task { await screenContextCollector.stopAndDrain() }
         let (rawRecorder, systemRecorder) = chunkRotationQueue.sync { () -> (PCMChunkRecorder?, PCMChunkRecorder?) in
             chunkTimingTracker.discard()
@@ -692,6 +728,7 @@ final class MeetingSession {
     }
 
     func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+        let accessibilityTimeline = await speakerAccessibilityMonitor.stop()
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
@@ -892,13 +929,22 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
-        let speakerState = TranscriptFormatter.structured(
+        var speakerState = TranscriptFormatter.structured(
             micSegments: protectedTranscriptInputs.micSegments,
             systemSegments: protectedTranscriptInputs.systemSegments,
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
             meetingStart: meetingStart
         )
 
+        let activities = protectedTranscriptInputs.diarizationSegments.map {
+            MeetingSpeakerActivity(key: .init(epoch: speakerState.epoch, channel: .system, clusterID: $0.speakerId), start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
+        }
+        var accessibilitySelfKeys: Set<MeetingSpeakerKey> = []
+        if let authorization = speakerAccessibilityAuthorization,
+           await speakerAccessibilityAuthorizationProvider?() == authorization {
+            accessibilityTimeline.apply(activities: activities, to: &speakerState)
+            accessibilitySelfKeys = accessibilityTimeline.assignments(activities: activities).explicitSelf
+        }
         let rawTranscript = speakerState.render()
         let titleManualNotes = await manualNotesProvider?()
         let generatedTitle: String
@@ -917,7 +963,6 @@ final class MeetingSession {
         ),
            !autoTitle.isEmpty {
             generatedTitle = autoTitle
-            fputs("[meeting] auto-generated title: \(generatedTitle)\n", stderr)
         } else {
             generatedTitle = title
         }
@@ -970,7 +1015,7 @@ final class MeetingSession {
             protectedSystemSegmentCount: protectedTranscriptInputs.systemSegments.count
         )
 
-        return MeetingSessionResult(
+        let result = MeetingSessionResult(
             title: generatedTitle,
             originalTitle: title,
             calendarEventID: calendarEventID,
@@ -985,8 +1030,11 @@ final class MeetingSession {
             templateSnapshot: templateSnapshot,
             visualContext: visualContext.isEmpty ? nil : visualContext,
             speakerState: speakerState,
-            summaryIsCurrent: summaryIsCurrent
+            summaryIsCurrent: summaryIsCurrent,
+            speakerAccessibilityAuthorization: speakerAccessibilityAuthorization,
+            accessibilitySelfKeys: accessibilitySelfKeys
         )
+        return result.validatingAccessibilityAuthorization(await speakerAccessibilityAuthorizationProvider?())
     }
 
     static func calendarTitleCandidate(originalTitle: String, calendarEventID: String?) -> String? {
@@ -1279,6 +1327,7 @@ final class MeetingSession {
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
+            self.lastSystemSampleUptime = ProcessInfo.processInfo.systemUptime
 
             let floatSamples = samples.map { Float($0) / 32767.0 }
             self.feedSystemPartialSession(floatSamples)

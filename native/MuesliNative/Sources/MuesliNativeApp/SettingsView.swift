@@ -1148,6 +1148,9 @@ struct SettingsView: View {
                 description: "Show recent transcript beside the waveform.",
                 controlWidth: meetingControlWidth
             ) {
+                settingsControl("meeting_ax_speakers")
+                Text("Experimental. Requires Accessibility access and verified meeting app layouts. Names are used only with consistent speaking evidence.")
+                    .font(.caption).foregroundStyle(.secondary)
                 settingsControl("meeting_hover_transcript")
             }
             Divider().background(MuesliTheme.surfaceBorder)
