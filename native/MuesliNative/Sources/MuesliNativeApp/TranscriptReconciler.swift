@@ -9,7 +9,7 @@ struct ReconciledTranscriptInputs {
     /// Raw microphone cluster IDs retained for owner recognition, even when
     /// significance filtering leaves the displayed mic channel generic.
     let micIdentitySegments: [TimedSpeakerSegment]?
-    /// Significant in-room speakers only; nil when the mic channel stays "You".
+    /// Significant in-room speakers; a single cluster is retained when owner matching or live labels need its ID.
     var micDiarizationSegments: [TimedSpeakerSegment]? = nil
 }
 
@@ -43,7 +43,10 @@ enum TranscriptReconciler {
         micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         preserveMicrophoneIdentityBoundaries: Bool = false
     ) -> ReconciledTranscriptInputs {
-        let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments)
+        let localDiarization = SpeakerAttribution.localDiarization(
+            from: micDiarizationSegments,
+            preserveSingleSpeakerIdentity: preserveMicrophoneIdentityBoundaries
+        )
         let micSpeaker = micSpeakerResolver(for: preserveMicrophoneIdentityBoundaries
             ? micDiarizationSegments
             : localDiarization)

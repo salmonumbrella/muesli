@@ -370,6 +370,34 @@ struct TranscriptReconcilerTests {
         #expect(Set(reconciled.micDiarizationSegments?.map(\.speakerId) ?? []) == ["room_a", "room_b"])
     }
 
+    @Test("owner recognition retains a single significant mic cluster")
+    func ownerRecognitionRetainsSingleMicCluster() {
+        let epoch = UUID()
+        let diarization = [makeDiarSeg(speakerId: "owner-cluster", start: 0, end: 6)]
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [SpeechSegment(start: 0, end: 6, text: "Owner words")],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: diarization,
+            preserveMicrophoneIdentityBoundaries: true
+        )
+
+        #expect(reconciled.micDiarizationSegments?.map(\.speakerId) == ["owner-cluster"])
+        var state = TranscriptFormatter.structured(
+            micSegments: reconciled.micSegments,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: reconciled.micDiarizationSegments,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner-cluster")
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Enrolled owner", profileID: UUID())
+
+        #expect(state.labels[ownerKey] == "Enrolled owner (You)")
+    }
+
     @Test("consecutive mic turns without diarization coverage still merge")
     func consecutiveUncoveredMicTurnsMerge() {
         let reconciled = TranscriptReconciler.reconcile(
