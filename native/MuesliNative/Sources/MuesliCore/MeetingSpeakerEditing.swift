@@ -148,6 +148,7 @@ extension MeetingSpeakerState {
     }
 
     public func sampleRange(for key: MeetingSpeakerKey) -> MeetingSpeakerSampleRange? {
+        guard (transcriptPrefix ?? "").isEmpty else { return nil }
         guard activeSpeakers.contains(where: { $0.key == key }) else { return nil }
         for turn in turns.sorted(by: { $0.start < $1.start }) where canonicalKey(for: turn.speaker) == key && turn.sampleEligible != false {
             let end = min(turn.end, turn.start + 6)

@@ -404,6 +404,7 @@ public final class MuesliController: NSObject {
         onChange: { [weak self] _ in self?.ownerVoiceProfileDidChange() })
     private var ownerRecognitionGeneration = UUID()
     private var ownerRecognitionState: String?
+    private var deferredSpeakerTasks: [Int64: Task<Void, Never>] = [:]
     private var ownerInvalidationTask: Task<Void, Never>?
 
     func currentOwnerRecognitionContext() -> MeetingOwnerRecognitionContext? {
@@ -743,6 +744,7 @@ public final class MuesliController: NSObject {
         super.init()
         _ = ownerVoice
         ownerVoiceProfileDidChange()
+        recoverDeferredSpeakerLabeling()
         dictationAudioSessionManager.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleDictationAudioSessionEvent(event)
@@ -796,9 +798,17 @@ public final class MuesliController: NSObject {
         reconcilePendingDictionaryCorrectionAccessibilityEnable()
 
         // Clean up leftover audio temp files from previous sessions.
+        let recoveryRecords = MeetingSpeakerBacklogAudio().recoveryRecords()
+        for record in recoveryRecords {
+            guard !record.urls.isEmpty else { continue }
+            appState.meetingSpeakerLabelingRecovery.insert(record.meetingID)
+            appState.meetingSpeakerRecoveryAudio[record.meetingID] = record.urls
+        }
+        let recoverySources = recoveryRecords.flatMap(\.urls)
         cleanupTemporaryDirectory(
             named: "muesli-system-audio",
-            logDescription: "leftover temp audio files"
+            logDescription: "leftover temp audio files",
+            preserving: recoverySources
         )
         cleanupTemporaryDirectory(
             named: "muesli-meeting-recordings",
@@ -807,7 +817,8 @@ public final class MuesliController: NSObject {
         // A crash mid-meeting would otherwise keep the whole cleaned mic track.
         cleanupTemporaryDirectory(
             named: MeetingSession.micDiarizationDirectoryName,
-            logDescription: "leftover mic diarization tracks"
+            logDescription: "leftover mic diarization tracks",
+            preserving: recoverySources
         )
         cleanupHistoricalMeetingWaveformCacheFilesIfNeeded()
 
@@ -8574,6 +8585,7 @@ public final class MuesliController: NSObject {
     ) throws -> CompletedMeetingPersistenceResult {
         let result = result.validatingAccessibilityAuthorization(currentMeetingSpeakerAuthorization())
             .validatingOwnerAuthorization(currentOwnerRecognitionContext()?.token)
+        let pending = result.pendingSpeakerLabeling?.prepared(for: result.rawTranscript)
         let meetingID: Int64
         let savedRecordingPath = preparedRecordingSave.path
         let recordingSaveError = preparedRecordingSave.error
@@ -8599,7 +8611,8 @@ public final class MuesliController: NSObject {
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
                 selectedTemplatePrompt: result.templateSnapshot.prompt,
-                visualContext: result.visualContext
+                visualContext: result.visualContext,
+                deferredSpeakerLabeling: pending
             )
             meetingID = existingMeetingID
             clearCachedMeetingManualNotes(id: existingMeetingID)
@@ -8619,12 +8632,135 @@ public final class MuesliController: NSObject {
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
                 selectedTemplatePrompt: result.templateSnapshot.prompt,
-                visualContext: result.visualContext
+                visualContext: result.visualContext,
+                deferredSpeakerLabeling: pending
             )
         }
-        persistSpeakerState(result.speakerState, meetingID: meetingID, summaryIsCurrent: result.summaryIsCurrent)
+        persistSpeakerState(result.speakerState ?? pending?.state, meetingID: meetingID, summaryIsCurrent: result.summaryIsCurrent)
+        if let pending {
+            if let job = try? dictationStore.meetingSpeakerLabelingJobs().first(where: { $0.pending.audio.id == pending.audio.id }) {
+                appState.meetingSpeakerLabelingJobs[meetingID] = job
+                startDeferredSpeakerLabeling(job)
+            } else { appState.meetingSpeakerLabelingRecovery.insert(meetingID) }
+        }
+        if !result.speakerLabelingRecoveryURLs.isEmpty {
+            appState.meetingSpeakerLabelingRecovery.insert(meetingID)
+            appState.meetingSpeakerRecoveryAudio[meetingID] = result.speakerLabelingRecoveryURLs
+            do {
+                let record = try MeetingSpeakerBacklogAudio().recordRecoverySources(
+                    meetingID: meetingID,
+                    sources: result.speakerLabelingRecoveryURLs
+                )
+                appState.meetingSpeakerRecoveryAudio[meetingID] = record.urls
+            } catch {
+                fputs("[muesli-native] could not save deferred speaker recovery record\n", stderr)
+            }
+        }
         scheduleICloudSyncAfterLocalChange()
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
+    }
+
+    func revealSpeakerLabelingRecovery(id: Int64) {
+        if let urls = appState.meetingSpeakerRecoveryAudio[id], !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+        else { openSpeakerLabelingRecoveryFolder() }
+    }
+    func discardSpeakerLabelingRecovery(id: Int64) {
+        do {
+            try MeetingSpeakerBacklogAudio().discardRecoverySources(
+                meetingID: id,
+                fallbackSources: appState.meetingSpeakerRecoveryAudio[id] ?? []
+            )
+            appState.meetingSpeakerRecoveryAudio[id] = nil
+            appState.meetingSpeakerLabelingRecovery.remove(id)
+        } catch {
+            fputs("[muesli-native] could not discard deferred speaker recovery audio\n", stderr)
+        }
+    }
+    func openSpeakerLabelingRecoveryFolder() {
+        let root = MeetingSpeakerBacklogAudio().root
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        NSWorkspace.shared.open(root)
+    }
+    private func recoverDeferredSpeakerLabeling() {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        Task { [weak self] in
+            let jobs = await Task.detached {
+                MeetingSpeakerBacklogAudio().cleanAbandonedStaging()
+                return (try? DictationStore(databaseURL: databaseURL).meetingSpeakerLabelingJobs()) ?? []
+            }.value
+            guard let self else { return }
+            for job in jobs {
+                if self.meeting(id: job.meetingID) == nil { self.discardDeferredSpeakerLabeling(job); continue }
+                self.appState.meetingSpeakerLabelingJobs[job.meetingID] = job
+                if job.status != .superseded { self.startDeferredSpeakerLabeling(job) }
+            }
+        }
+    }
+    func retryDeferredSpeakerLabeling(id: Int64) {
+        guard let job = appState.meetingSpeakerLabelingJobs[id] else { return }
+        startDeferredSpeakerLabeling(job, retry: true)
+    }
+    private func startDeferredSpeakerLabeling(_ job: MeetingSpeakerLabelingJob, retry: Bool = false) {
+        guard deferredSpeakerTasks[job.meetingID] == nil,
+              activeMeetingSession?.capturePhase.acceptsSamples != true, !isInteractiveAudioActivityInProgress else { return }
+        var working = job; working.status = .running; appState.meetingSpeakerLabelingJobs[job.meetingID] = working
+        let databaseURL = dictationStore.resolvedDatabaseURL, coordinator = transcriptionCoordinator
+        let currentOwner = currentOwnerRecognitionContext()
+        let ownerContext = job.pending.allowsOwnerProfile(currentOwner?.profile?.id) ? currentOwner : nil
+        deferredSpeakerTasks[job.meetingID] = Task { [weak self] in
+            await coordinator.preloadDiarizer()
+            let outcome = await MeetingSpeakerLabelingService.shared.wait(id: job.pending.audio.id, retry: retry, operation: {
+                try await coordinator.labelMeetingAudio(MeetingSpeakerBacklogAudio().urls(job.pending.audio), owner: ownerContext)
+            })
+            var stateToPersist: MeetingSpeakerState?
+            if case .complete(let tracks) = outcome {
+                let latestOwner = self?.currentOwnerRecognitionContext()
+                let authorizedOwner = ownerContext.flatMap { latestOwner?.token == $0.token ? $0 : nil }
+                stateToPersist = job.pending.state.relabeling(
+                    channels: tracks.channels,
+                    ownerCluster: authorizedOwner == nil ? nil : tracks.ownerCluster,
+                    ownerName: authorizedOwner?.name,
+                    ownerProfileID: authorizedOwner?.profile?.id
+                )
+            }
+            let status: MeetingSpeakerLabelingStatus?
+            do {
+                let result: MeetingSpeakerWriteResult
+                if let stateToPersist {
+                    // Owner authorization and publication share the main-actor turn. A
+                    // revocation either precedes this write (and yields generic labels)
+                    // or follows it (and its invalidation observes the committed labels).
+                    result = try DictationStore(databaseURL: databaseURL)
+                        .completeMeetingSpeakerLabeling(job: job, state: stateToPersist)
+                } else {
+                    result = try await Task.detached {
+                        let store = DictationStore(databaseURL: databaseURL)
+                        try store.setMeetingSpeakerLabelingStatus(id: job.pending.audio.id, status: .failed)
+                        return MeetingSpeakerWriteResult.conflict
+                    }.value
+                }
+                status = result == .updated ? nil : result == .invalidated ? .superseded : .failed
+            } catch { status = .failed }
+            if status == nil {
+                await MeetingSpeakerLabelingService.shared.retire(id: job.pending.audio.id, cleanup: { MeetingSpeakerBacklogAudio().discard(job.pending.audio) })
+            }
+            guard let self else { return }
+            self.deferredSpeakerTasks[job.meetingID] = nil
+            guard self.appState.meetingSpeakerLabelingJobs[job.meetingID]?.pending.audio.id == job.pending.audio.id else { return }
+            if let status { var updated = job; updated.status = status; self.appState.meetingSpeakerLabelingJobs[job.meetingID] = updated }
+            else { self.appState.meetingSpeakerLabelingJobs[job.meetingID] = nil }
+            self.scheduleICloudSyncAfterLocalChange(); self.syncAppState(); self.historyWindowController?.reload()
+        }
+    }
+    func discardDeferredSpeakerLabeling(id: Int64) {
+        guard let job = appState.meetingSpeakerLabelingJobs[id] else { return }
+        discardDeferredSpeakerLabeling(job)
+    }
+    private func discardDeferredSpeakerLabeling(_ job: MeetingSpeakerLabelingJob) {
+        do { try dictationStore.discardMeetingSpeakerLabeling(id: job.pending.audio.id) }
+        catch { return }
+        appState.meetingSpeakerLabelingJobs[job.meetingID] = nil
+        Task { await MeetingSpeakerLabelingService.shared.retire(id: job.pending.audio.id, cleanup: { MeetingSpeakerBacklogAudio().discard(job.pending.audio) }) }
     }
 
     private func persistSpeakerState(_ state: MeetingSpeakerState?, meetingID: Int64, summaryIsCurrent: Bool = true) {
@@ -9019,6 +9155,7 @@ public final class MuesliController: NSObject {
     }
 
     private func cleanupTemporaryMeetingAudioFiles(for result: MeetingSessionResult) {
+        guard result.speakerLabelingRecoveryURLs.isEmpty else { return }
         if let retainedRecordingURL = result.retainedRecordingURL {
             try? FileManager.default.removeItem(at: retainedRecordingURL)
         }
@@ -9027,7 +9164,7 @@ public final class MuesliController: NSObject {
         }
     }
 
-    private func cleanupTemporaryDirectory(named directoryName: String, logDescription: String) {
+    private func cleanupTemporaryDirectory(named directoryName: String, logDescription: String, preserving preservedURLs: [URL] = []) {
         let directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(directoryName)
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directoryURL,
@@ -9036,12 +9173,19 @@ public final class MuesliController: NSObject {
             return
         }
 
+        let preservedRecords = MeetingSpeakerBacklogAudio().recoveryRecords()
+        let preserved = preservedURLs + preservedRecords.flatMap(\.urls)
+        var removedCount = 0
         for file in files {
+            if MeetingSpeakerRecoveryRecord.preserves(file, sourceURLs: preserved) {
+                continue
+            }
             try? FileManager.default.removeItem(at: file)
+            removedCount += 1
         }
 
-        if !files.isEmpty {
-            fputs("[muesli-native] cleaned up \(files.count) \(logDescription)\n", stderr)
+        if removedCount > 0 {
+            fputs("[muesli-native] cleaned up \(removedCount) \(logDescription)\n", stderr)
         }
     }
 
