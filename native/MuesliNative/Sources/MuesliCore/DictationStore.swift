@@ -272,6 +272,38 @@ public final class DictationStore {
                 throw lastError(db)
             }
         }
+        try exec("""
+        CREATE TABLE IF NOT EXISTS local_meeting_transcript_versions (
+            meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+            generation INTEGER NOT NULL DEFAULT 0,
+            summary_stale INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS local_meeting_speaker_state (
+            meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+            epoch TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            rendered_hash TEXT NOT NULL,
+            authoritative INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TRIGGER IF NOT EXISTS local_meeting_speaker_text_changed
+        AFTER UPDATE OF raw_transcript ON meetings
+        BEGIN
+            INSERT INTO local_meeting_transcript_versions(meeting_id, generation, summary_stale)
+            VALUES (NEW.id, 1, CASE WHEN COALESCE(OLD.raw_transcript, '') != COALESCE(NEW.raw_transcript, '') THEN 1 ELSE 0 END)
+            ON CONFLICT(meeting_id) DO UPDATE SET generation = generation + 1,
+                summary_stale = MAX(summary_stale, excluded.summary_stale);
+            UPDATE local_meeting_speaker_state SET authoritative = 0 WHERE meeting_id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS local_meeting_speaker_capture_restarted
+        AFTER UPDATE OF meeting_status ON meetings
+        WHEN NEW.meeting_status IN ('recording', 'processing') AND OLD.meeting_status != NEW.meeting_status
+        BEGIN
+            INSERT INTO local_meeting_transcript_versions(meeting_id, generation) VALUES (NEW.id, 1)
+            ON CONFLICT(meeting_id) DO UPDATE SET generation = generation + 1;
+            UPDATE local_meeting_speaker_state SET authoritative = 0 WHERE meeting_id = NEW.id;
+        END;
+        """, db: db)
         // Migrate local development databases created by the superseded PR.
         _ = sqlite3_exec(
             db,
@@ -3471,10 +3503,16 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        expectedTranscript: MeetingTranscriptVersion? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        defer { try? exec("ROLLBACK", db: db) }
+        if let expectedTranscript, try speakerTranscriptVersion(id: id, db: db) != expectedTranscript {
+            throw NSError(domain: "MeetingTranscript", code: 1, userInfo: [NSLocalizedDescriptionKey: "The transcript changed during processing. Your current text was preserved."])
+        }
         let sql = """
         UPDATE meetings
         SET title = ?, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
@@ -3496,6 +3534,10 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+        if expectedTranscript != nil {
+            _ = try speakerRows("UPDATE local_meeting_transcript_versions SET summary_stale = 0 WHERE meeting_id = ?", [String(id)], db: db)
+        }
+        try exec("COMMIT", db: db)
     }
 
     public func updateMeetingTranscriptAndSummary(
@@ -3505,10 +3547,17 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        expectedTranscript: MeetingTranscriptVersion? = nil,
+        summaryIsCurrent: Bool = true
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        defer { try? exec("ROLLBACK", db: db) }
+        if let expectedTranscript, try speakerTranscriptVersion(id: id, db: db) != expectedTranscript {
+            throw NSError(domain: "MeetingTranscript", code: 1, userInfo: [NSLocalizedDescriptionKey: "The transcript changed during processing. Your current text was preserved."])
+        }
         let manualNotes = try manualNotesForMeeting(id: id, db: db)
         let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
         let sql = """
@@ -3537,6 +3586,10 @@ public final class DictationStore {
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.meetingNotFound(id: id)
         }
+        if expectedTranscript != nil && summaryIsCurrent {
+            _ = try speakerRows("UPDATE local_meeting_transcript_versions SET summary_stale = 0 WHERE meeting_id = ?", [String(id)], db: db)
+        }
+        try exec("COMMIT", db: db)
     }
 
     public func updateMeetingTitle(id: Int64, title: String) throws {
@@ -5746,5 +5799,112 @@ public final class DictationStore {
             cursor = previous
         }
         return (current, longest)
+    }
+}
+
+
+extension DictationStore {
+    public func meetingTranscriptVersion(id: Int64) throws -> MeetingTranscriptVersion? {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try speakerTranscriptVersion(id: id, db: db)
+    }
+
+    public func meetingSpeakerSnapshot(id: Int64) throws -> MeetingSpeakerSnapshot? {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN", db: db); defer { try? exec("ROLLBACK", db: db) }
+        return try speakerSnapshot(id: id, db: db)
+    }
+
+    public func meetingSummaryIsStale(id: Int64) throws -> Bool {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try speakerRows("SELECT summary_stale FROM local_meeting_transcript_versions WHERE meeting_id = ?", [String(id)], db: db).first?.first == "1"
+    }
+
+    /// Only a successful summary for this exact transcript may clear the stale indication.
+    public func markMeetingSummaryCurrent(id: Int64, expected: MeetingTranscriptVersion) throws {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        if try speakerTranscriptVersion(id: id, db: db) == expected {
+            _ = try speakerRows("UPDATE local_meeting_transcript_versions SET summary_stale = 0 WHERE meeting_id = ?", [String(id)], db: db)
+        }
+        try exec("COMMIT", db: db)
+    }
+
+    public func installMeetingSpeakerState(id: Int64, state: MeetingSpeakerState, expected: MeetingTranscriptVersion) throws -> MeetingSpeakerWriteResult {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        guard try speakerTranscriptVersion(id: id, db: db) == expected else { return .conflict }
+        guard state.isValid, state.revision == 0, MeetingSpeakerState.digest(state.render()) == expected.digest else { return .invalidated }
+        let priorEpoch = try speakerRows("SELECT epoch FROM local_meeting_speaker_state WHERE meeting_id = ?", [String(id)], db: db).first?.first
+        guard priorEpoch != state.epoch.uuidString else { return .conflict }
+        try writeSpeakerState(id: id, state: state, version: expected, db: db)
+        try exec("COMMIT", db: db)
+        return .updated
+    }
+
+    /// Serializes validation, canonical text mutation, trigger invalidation and new authority publication.
+    public func updateMeetingSpeakerState(id: Int64, state: MeetingSpeakerState, expected: MeetingSpeakerSnapshot) throws -> MeetingSpeakerWriteResult {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        guard let current = try speakerSnapshot(id: id, db: db) else { return .invalidated }
+        guard current.version == expected.version, current.state.epoch == expected.state.epoch,
+              current.state.revision == expected.state.revision else { return .conflict }
+        guard state.isValid, state.epoch == current.state.epoch, state.revision == current.state.revision else { return .conflict }
+        let text = state.render()
+        let manualNotes = try manualNotesForMeeting(id: id, db: db)
+        _ = try speakerRows("UPDATE meetings SET raw_transcript = ?, word_count = ?, updated_at = ?, sync_dirty = 1 WHERE id = ? AND deleted_at IS NULL",
+                            [text, String(Self.countWords(in: text) + Self.countWords(in: manualNotes)), String(Date().timeIntervalSince1970), String(id)], db: db)
+        guard let version = try speakerTranscriptVersion(id: id, db: db) else { return .invalidated }
+        var next = state; next.revision += 1
+        try writeSpeakerState(id: id, state: next, version: version, db: db)
+        try exec("COMMIT", db: db)
+        return .updated
+    }
+
+    private func speakerTranscriptVersion(id: Int64, db: OpaquePointer?) throws -> MeetingTranscriptVersion? {
+        guard let row = try speakerRows("""
+            SELECT COALESCE(v.generation, 0), COALESCE(m.raw_transcript, '') FROM meetings m
+            LEFT JOIN local_meeting_transcript_versions v ON v.meeting_id = m.id
+            WHERE m.id = ? AND m.deleted_at IS NULL
+            """, [String(id)], db: db).first, let generation = Int64(row[0]) else { return nil }
+        return .init(generation: generation, digest: MeetingSpeakerState.digest(row[1]))
+    }
+
+    private func speakerSnapshot(id: Int64, db: OpaquePointer?) throws -> MeetingSpeakerSnapshot? {
+        guard let row = try speakerRows("""
+            SELECT s.state_json, s.generation, s.rendered_hash, COALESCE(v.summary_stale, 0)
+            FROM local_meeting_speaker_state s LEFT JOIN local_meeting_transcript_versions v ON v.meeting_id = s.meeting_id
+            WHERE s.meeting_id = ? AND s.authoritative = 1
+            """, [String(id)], db: db).first,
+              let state = try? JSONDecoder().decode(MeetingSpeakerState.self, from: Data(row[0].utf8)), state.isValid,
+              let current = try speakerTranscriptVersion(id: id, db: db), current.generation == Int64(row[1]),
+              current.digest == row[2], MeetingSpeakerState.digest(state.render()) == current.digest else { return nil }
+        return .init(state: state, version: current, summaryIsStale: row[3] == "1")
+    }
+
+    private func writeSpeakerState(id: Int64, state: MeetingSpeakerState, version: MeetingTranscriptVersion, db: OpaquePointer?) throws {
+        let json = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
+        _ = try speakerRows("""
+            INSERT INTO local_meeting_speaker_state(meeting_id, epoch, state_json, generation, rendered_hash, authoritative)
+            VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(meeting_id) DO UPDATE SET
+            epoch = excluded.epoch, state_json = excluded.state_json, generation = excluded.generation,
+            rendered_hash = excluded.rendered_hash, authoritative = 1
+            """, [String(id), state.epoch.uuidString, json, String(version.generation), version.digest], db: db)
+    }
+
+    private func speakerRows(_ sql: String, _ bindings: [String], db: OpaquePointer?) throws -> [[String]] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in bindings.enumerated() {
+            sqlite3_bind_text(statement, Int32(index + 1), value, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        }
+        var rows: [[String]] = []
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { return rows }
+            guard result == SQLITE_ROW else { throw lastError(db) }
+            rows.append((0..<sqlite3_column_count(statement)).map { stringColumn(statement, index: $0) })
+        }
     }
 }

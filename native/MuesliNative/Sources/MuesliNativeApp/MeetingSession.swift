@@ -104,6 +104,8 @@ struct MeetingSessionResult {
     let systemRecordingURL: URL?
     let templateSnapshot: MeetingTemplateSnapshot
     var visualContext: String? = nil
+    var speakerState: MeetingSpeakerState? = nil
+    var summaryIsCurrent: Bool = true
 }
 
 extension MeetingSessionResult {
@@ -890,13 +892,14 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
-        let rawTranscript = TranscriptFormatter.merge(
+        let speakerState = TranscriptFormatter.structured(
             micSegments: protectedTranscriptInputs.micSegments,
             systemSegments: protectedTranscriptInputs.systemSegments,
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
             meetingStart: meetingStart
         )
 
+        let rawTranscript = speakerState.render()
         let titleManualNotes = await manualNotesProvider?()
         let generatedTitle: String
         onProgress?(.generatingTitle)
@@ -926,6 +929,7 @@ final class MeetingSession {
         let manualNotes = await manualNotesProvider?()
         let participantNames = await participantNamesProvider?() ?? []
         let formattedNotes: String
+        var summaryIsCurrent = true
         do {
             formattedNotes = try await MeetingSummaryClient.summarize(
                 transcript: rawTranscript,
@@ -939,6 +943,7 @@ final class MeetingSession {
                 previousMeetingNotes: previousMeetingNotes
             )
         } catch {
+            summaryIsCurrent = false
             fputs("[meeting] summary generation failed: \(error.localizedDescription)\n", stderr)
             formattedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: rawTranscript,
@@ -978,7 +983,9 @@ final class MeetingSession {
             retainedRecordingError: retainedRecordingWriterError,
             systemRecordingURL: systemAudioURL,
             templateSnapshot: templateSnapshot,
-            visualContext: visualContext.isEmpty ? nil : visualContext
+            visualContext: visualContext.isEmpty ? nil : visualContext,
+            speakerState: speakerState,
+            summaryIsCurrent: summaryIsCurrent
         )
     }
 
