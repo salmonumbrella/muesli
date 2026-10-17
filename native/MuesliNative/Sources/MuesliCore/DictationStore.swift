@@ -278,6 +278,11 @@ public final class DictationStore {
             generation INTEGER NOT NULL DEFAULT 0,
             summary_stale INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS local_meeting_speaker_jobs (
+            meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+            job_id TEXT NOT NULL UNIQUE, job_json TEXT NOT NULL, status TEXT NOT NULL,
+            status_updated_at REAL NOT NULL DEFAULT 0
+        );
         CREATE TABLE IF NOT EXISTS local_meeting_speaker_state (
             meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
             epoch TEXT NOT NULL,
@@ -286,7 +291,8 @@ public final class DictationStore {
             rendered_hash TEXT NOT NULL,
             authoritative INTEGER NOT NULL DEFAULT 1
         );
-        CREATE TRIGGER IF NOT EXISTS local_meeting_speaker_text_changed
+        DROP TRIGGER IF EXISTS local_meeting_speaker_text_changed;
+        CREATE TRIGGER local_meeting_speaker_text_changed
         AFTER UPDATE OF raw_transcript ON meetings
         BEGIN
             INSERT INTO local_meeting_transcript_versions(meeting_id, generation, summary_stale)
@@ -305,6 +311,9 @@ public final class DictationStore {
             UPDATE local_meeting_speaker_state SET authoritative = 0 WHERE meeting_id = NEW.id;
         END;
         """, db: db)
+        if sqlite3_exec(db, "ALTER TABLE local_meeting_speaker_jobs ADD COLUMN status_updated_at REAL NOT NULL DEFAULT 0", nil, nil, nil) != SQLITE_OK {
+            guard String(cString: sqlite3_errmsg(db)).contains("duplicate column name") else { throw lastError(db) }
+        }
         // Migrate local development databases created by the superseded PR.
         _ = sqlite3_exec(
             db,
@@ -1210,10 +1219,12 @@ public final class DictationStore {
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        deferredSpeakerLabeling: MeetingSpeakerPendingLabeling? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
 
         let sql = """
         INSERT INTO meetings
@@ -1262,7 +1273,10 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
-        return sqlite3_last_insert_rowid(db)
+        let id = sqlite3_last_insert_rowid(db)
+        try writeDeferredSpeakerJobIfPossible(id: id, pending: deferredSpeakerLabeling, db: db)
+        try exec("COMMIT", db: db)
+        return id
     }
 
     public func listMeetingParticipants(meetingID: Int64) throws -> [MeetingParticipant] {
@@ -2640,6 +2654,7 @@ public final class DictationStore {
                 throw DictationStoreError.meetingNotFound(id: id)
             }
             try exec("DELETE FROM local_meeting_speaker_state WHERE meeting_id = \(id)", db: db)
+            _ = try speakerRows("DELETE FROM local_meeting_speaker_jobs WHERE meeting_id = ?", [String(id)], db: db)
             try detachFollowUpSuccessors(of: id, db: db)
             try exec("COMMIT", db: db)
         } catch {
@@ -2768,6 +2783,7 @@ public final class DictationStore {
         try exec("DELETE FROM meeting_resume_snapshots", db: db)
         try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
         try exec("DELETE FROM meeting_participants", db: db)
+        try exec("DELETE FROM local_meeting_speaker_jobs", db: db)
         try exec(
             """
             UPDATE meetings
@@ -3087,10 +3103,12 @@ public final class DictationStore {
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
         selectedTemplatePrompt: String? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        deferredSpeakerLabeling: MeetingSpeakerPendingLabeling? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
         let sql = """
         UPDATE meetings
         SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, visual_context = ?, updated_at = ?, sync_dirty = 1
@@ -3136,6 +3154,8 @@ public final class DictationStore {
         }
         try deleteLiveTranscriptCheckpoints(meetingID: id, db: db)
         try deleteResumeSnapshot(meetingID: id, db: db)
+        try writeDeferredSpeakerJobIfPossible(id: id, pending: deferredSpeakerLabeling, db: db)
+        try exec("COMMIT", db: db)
     }
 
     private func manualNoteWordCountIfNeeded(for status: MeetingStatus, id: Int64, db: OpaquePointer?) throws -> Int? {
@@ -5227,8 +5247,8 @@ public final class DictationStore {
     }
 
     private func upsertSyncedMeeting(_ record: SyncTextRecord, db: OpaquePointer?) throws -> Bool {
-        if let localUpdatedAt = try localUpdatedAt(table: "meetings", recordName: record.id, db: db),
-           localUpdatedAt > record.updatedAt.timeIntervalSince1970 {
+        let localUpdatedAt = try localUpdatedAt(table: "meetings", recordName: record.id, db: db)
+        if let localUpdatedAt, localUpdatedAt > record.updatedAt.timeIntervalSince1970 {
             return false
         }
 
@@ -5304,6 +5324,7 @@ public final class DictationStore {
         let changed = sqlite3_changes(db) > 0
         if record.isDeleted && changed {
             try deleteSyncedMeetingSpeakerState(recordName: record.id, db: db)
+            _ = try speakerRows("DELETE FROM local_meeting_speaker_jobs WHERE meeting_id IN (SELECT id FROM meetings WHERE cloud_record_name = ?)", [record.id], db: db)
         }
         return changed
     }
@@ -5848,6 +5869,11 @@ extension DictationStore {
         return try speakerRows("SELECT meeting_id FROM local_meeting_speaker_state WHERE authoritative = 1", [], db: db).compactMap { $0.first.flatMap(Int64.init) }
     }
 
+    public func undeletedMeetingIDs() throws -> Set<Int64> {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return Set(try speakerRows("SELECT id FROM meetings WHERE deleted_at IS NULL", [], db: db).compactMap { $0.first.flatMap(Int64.init) })
+    }
+
     public func meetingTranscriptVersion(id: Int64) throws -> MeetingTranscriptVersion? {
         let db = try openDatabase(); defer { sqlite3_close(db) }
         return try speakerTranscriptVersion(id: id, db: db)
@@ -5857,6 +5883,22 @@ extension DictationStore {
         let db = try openDatabase(); defer { sqlite3_close(db) }
         try exec("BEGIN", db: db); defer { try? exec("ROLLBACK", db: db) }
         return try speakerSnapshot(id: id, db: db)
+    }
+
+    /// Clear revoked owner evidence from the latest state, retrying a concurrent correction instead of overwriting it.
+    public func removeRevokedOwnerEvidence(id: Int64, currentProfileID: UUID?, maximumAttempts: Int = 16) throws -> MeetingSpeakerWriteResult {
+        let attempts = max(1, maximumAttempts)
+        for _ in 0..<attempts {
+            guard let snapshot = try meetingSpeakerSnapshot(id: id) else { return .invalidated }
+            guard snapshot.state.voiceProfileID != nil, snapshot.state.voiceProfileID != currentProfileID else { return .updated }
+            var state = snapshot.state
+            state.removeSelfEvidence()
+            switch try updateMeetingSpeakerState(id: id, state: state, expected: snapshot) {
+            case .updated, .invalidated: return .updated
+            case .conflict: continue
+            }
+        }
+        return .conflict
     }
 
     public func meetingSummaryIsStale(id: Int64) throws -> Bool {
@@ -5950,5 +5992,121 @@ extension DictationStore {
             guard result == SQLITE_ROW else { throw lastError(db) }
             rows.append((0..<sqlite3_column_count(statement)).map { stringColumn(statement, index: $0) })
         }
+    }
+}
+
+
+extension DictationStore {
+    private func writeDeferredSpeakerJobIfPossible(id: Int64, pending: MeetingSpeakerPendingLabeling?, db: OpaquePointer?) throws {
+        guard let pending else { return }
+        try exec("SAVEPOINT speaker_job", db: db)
+        do {
+            guard let version = try speakerTranscriptVersion(id: id, db: db), pending.state.isValid,
+                  MeetingSpeakerState.digest(pending.state.render()) == version.digest else { throw DictationStoreError.meetingNotFound(id: id) }
+            let job = MeetingSpeakerLabelingJob(meetingID: id, pending: pending, expected: version)
+            let json = String(decoding: try JSONEncoder().encode(job), as: UTF8.self)
+            let now = String(Date().timeIntervalSince1970)
+            _ = try speakerRows("INSERT OR REPLACE INTO local_meeting_speaker_jobs(meeting_id,job_id,job_json,status,status_updated_at) VALUES(?,?,?,?,?)", [String(id), pending.audio.id.uuidString, json, "pending", now], db: db)
+            try exec("RELEASE speaker_job", db: db)
+        } catch {
+            try exec("ROLLBACK TO speaker_job", db: db); try exec("RELEASE speaker_job", db: db)
+            // Canonical speech is still saved. The native recovery marker retains the audio.
+        }
+    }
+    public func meetingSpeakerLabelingJobs() throws -> [MeetingSpeakerLabelingJob] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try speakerRows("SELECT job_json,status,status_updated_at FROM local_meeting_speaker_jobs", [], db: db).compactMap(decodeSpeakerLabelingJob)
+    }
+    public func meetingSpeakerLabelingJobs(forCloudRecordNames recordNames: [String]) throws -> [MeetingSpeakerLabelingJob] {
+        guard !recordNames.isEmpty else { return [] }
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        let placeholders = Array(repeating: "?", count: recordNames.count).joined(separator: ",")
+        let sql = "SELECT j.job_json,j.status,j.status_updated_at FROM local_meeting_speaker_jobs j JOIN meetings m ON m.id=j.meeting_id WHERE m.cloud_record_name IN (\(placeholders))"
+        return try speakerRows(sql, recordNames, db: db).compactMap(decodeSpeakerLabelingJob)
+    }
+    public func meetingID(forCloudRecordName recordName: String) throws -> Int64? {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try speakerRows("SELECT id FROM meetings WHERE cloud_record_name = ? AND deleted_at IS NULL LIMIT 1", [recordName], db: db)
+            .first?.first.flatMap(Int64.init)
+    }
+    public func clearDeferredSpeakerAccessibilityEvidence(except authorizationID: UUID?) throws -> Int {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        let rows = try speakerRows("SELECT job_json,status,status_updated_at FROM local_meeting_speaker_jobs", [], db: db)
+        var changed = 0
+        for row in rows {
+            guard let job = decodeSpeakerLabelingJob(row) else { continue }
+            let pending = job.pending.validatingAccessibilityAuthorization(authorizationID)
+            guard pending != job.pending else { continue }
+            let updated = MeetingSpeakerLabelingJob(meetingID: job.meetingID, pending: pending,
+                                                    expected: job.expected, status: job.status,
+                                                    statusUpdatedAt: job.statusUpdatedAt)
+            let json = String(decoding: try JSONEncoder().encode(updated), as: UTF8.self)
+            _ = try speakerRows("UPDATE local_meeting_speaker_jobs SET job_json=? WHERE job_id=?", [json, job.pending.audio.id.uuidString], db: db)
+            changed += 1
+        }
+        try exec("COMMIT", db: db)
+        return changed
+    }
+    private func decodeSpeakerLabelingJob(_ row: [String]) -> MeetingSpeakerLabelingJob? {
+            guard row.count == 3, var job = try? JSONDecoder().decode(MeetingSpeakerLabelingJob.self, from: Data(row[0].utf8)),
+                  let status = MeetingSpeakerLabelingStatus(rawValue: row[1]) else { return nil }
+            job.status = status
+            job.statusUpdatedAt = Double(row[2]).map { Date(timeIntervalSince1970: $0) }
+            return job
+    }
+    public func setMeetingSpeakerLabelingStatus(id: UUID, status: MeetingSpeakerLabelingStatus, at date: Date = Date()) throws {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        _ = try speakerRows("UPDATE local_meeting_speaker_jobs SET status=?,status_updated_at=? WHERE job_id=?", [status.rawValue, String(date.timeIntervalSince1970), id.uuidString], db: db)
+    }
+    public func expireStaleMeetingSpeakerLabelingJobs(now: Date = Date(), retention: TimeInterval = 30 * 24 * 60 * 60) throws -> [MeetingSpeakerLabelingJob] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        let cutoff = now.addingTimeInterval(-max(0, retention)).timeIntervalSince1970
+        let rows = try speakerRows("SELECT job_json,status,status_updated_at FROM local_meeting_speaker_jobs WHERE status IN ('failed','superseded') AND status_updated_at <= ?", [String(cutoff)], db: db)
+        var expired: [MeetingSpeakerLabelingJob] = []
+        for row in rows {
+            guard row.count == 3, let original = try? JSONDecoder().decode(MeetingSpeakerLabelingJob.self, from: Data(row[0].utf8)) else { continue }
+            var pending = original.pending
+            pending.state = MeetingSpeakerState()
+            pending.ownerProfileID = nil
+            pending.accessibilityTimeline = nil
+            pending.accessibilityAuthorizationID = nil
+            let job = MeetingSpeakerLabelingJob(meetingID: original.meetingID, pending: pending, expected: original.expected,
+                                                status: .expired, statusUpdatedAt: now)
+            let json = String(decoding: try JSONEncoder().encode(job), as: UTF8.self)
+            _ = try speakerRows("UPDATE local_meeting_speaker_jobs SET job_json=?,status='expired',status_updated_at=? WHERE job_id=?", [json, String(now.timeIntervalSince1970), original.pending.audio.id.uuidString], db: db)
+            expired.append(job)
+        }
+        try exec("COMMIT", db: db)
+        return expired
+    }
+    public func discardMeetingSpeakerLabeling(id: UUID) throws {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        _ = try speakerRows("DELETE FROM local_meeting_speaker_jobs WHERE job_id=?", [id.uuidString], db: db)
+    }
+    public func completeMeetingSpeakerLabeling(job: MeetingSpeakerLabelingJob, state: MeetingSpeakerState) throws -> MeetingSpeakerWriteResult {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db); defer { try? exec("ROLLBACK", db: db) }
+        guard try speakerRows("SELECT job_id FROM local_meeting_speaker_jobs WHERE meeting_id=?", [String(job.meetingID)], db: db).first?.first == job.pending.audio.id.uuidString else { return .invalidated }
+        guard let json = try speakerRows("SELECT job_json FROM local_meeting_speaker_jobs WHERE job_id=?", [job.pending.audio.id.uuidString], db: db).first?.first,
+              let stored = try? JSONDecoder().decode(MeetingSpeakerLabelingJob.self, from: Data(json.utf8)),
+              stored.meetingID == job.meetingID, stored.expected == job.expected else { return .invalidated }
+        var storedPending = stored.pending, submittedPending = job.pending
+        storedPending.accessibilityTimeline = nil; storedPending.accessibilityAuthorizationID = nil
+        submittedPending.accessibilityTimeline = nil; submittedPending.accessibilityAuthorizationID = nil
+        guard storedPending == submittedPending else { return .invalidated }
+        guard try speakerTranscriptVersion(id: job.meetingID, db: db) == job.expected else {
+            _ = try speakerRows("UPDATE local_meeting_speaker_jobs SET status='superseded',status_updated_at=? WHERE job_id=?", [String(Date().timeIntervalSince1970), job.pending.audio.id.uuidString], db: db)
+            try exec("COMMIT", db: db); return .invalidated
+        }
+        guard state.isValid, state.epoch != job.pending.state.epoch, state.preservesSpeech(of: job.pending.state) else { return .invalidated }
+        let text = state.render(), manual = try manualNotesForMeeting(id: job.meetingID, db: db)
+        _ = try speakerRows("UPDATE meetings SET raw_transcript=?,word_count=?,updated_at=?,sync_dirty=1 WHERE id=? AND deleted_at IS NULL", [text, String(Self.countWords(in: text) + Self.countWords(in: manual)), String(Date().timeIntervalSince1970), String(job.meetingID)], db: db)
+        guard let version = try speakerTranscriptVersion(id: job.meetingID, db: db) else { return .invalidated }
+        try writeSpeakerState(id: job.meetingID, state: state, version: version, db: db)
+        _ = try speakerRows("UPDATE local_meeting_transcript_versions SET summary_stale=1 WHERE meeting_id=?", [String(job.meetingID)], db: db)
+        _ = try speakerRows("DELETE FROM local_meeting_speaker_jobs WHERE job_id=?", [job.pending.audio.id.uuidString], db: db)
+        try exec("COMMIT", db: db); return .updated
     }
 }

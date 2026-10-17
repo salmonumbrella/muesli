@@ -57,6 +57,24 @@ struct MeetingSpeakerStoreTests {
         #expect(try rawSpeakerStateJSON(id: id, store: store) == nil)
     }
 
+    @Test func syncedMeetingTombstoneErasesDeferredSpeakerJob() throws {
+        let (store, id, state) = try fixture()
+        let recordName = "speaker-job-delete-fixture"
+        try setCloudRecordName(recordName, meetingID: id, store: store)
+        let pending = MeetingSpeakerPendingLabeling(audio: .init(channels: [.system]), state: state)
+        try store.completeLiveMeeting(id: id, title: "Fixture", calendarEventID: nil, startTime: Date(), endTime: Date(),
+                                      rawTranscript: state.render(), formattedNotes: "Notes", micAudioPath: nil,
+                                      systemAudioPath: nil, deferredSpeakerLabeling: pending)
+        #expect(try store.meetingSpeakerLabelingJobs().count == 1)
+        let updatedAt = Date().addingTimeInterval(60)
+        let tombstone = SyncTextRecord(id: recordName, kind: .meeting, title: "Deleted Meeting", text: "",
+                                       speakerTranscript: "", createdAt: updatedAt, updatedAt: updatedAt,
+                                       startedAt: updatedAt, endedAt: updatedAt, durationSeconds: 0,
+                                       wordCount: 0, isDeleted: true)
+        #expect(try store.upsertSyncedTextRecord(tombstone))
+        #expect(try store.meetingSpeakerLabelingJobs().isEmpty)
+    }
+
     @Test func metadataOnlySyncPreservesSpeakerMappingButTranscriptSyncInvalidatesIt() throws {
         let (store, id, state) = try fixture()
         let recordName = "speaker-sync-fixture"
@@ -103,6 +121,28 @@ struct MeetingSpeakerStoreTests {
         )))
         #expect(try store.meetingSpeakerSnapshot(id: id) == nil)
         #expect(try store.meeting(id: id)?.rawTranscript == "Changed transcript")
+    }
+
+    @Test func sampleRangeUsesRecordingTimelineAfterUnequalPause() throws {
+        let epoch = UUID()
+        let mic = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "mic")
+        let system = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "system")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: mic, rank: 1, fallbackLabel: "Local speaker 1"),
+                       .init(key: system, rank: 2, fallbackLabel: "Speaker 1")],
+            turns: [.init(speaker: mic, timestamp: "00:00:02", start: 2.5, end: 3.5, text: "Local words"),
+                    .init(speaker: system, timestamp: "00:00:03", start: 3.75, end: 4.25, text: "Remote words")])
+        let mappings = [
+            MeetingSpeakerSampleTimeMapping(channel: .microphone, sourceTime: 2, recordingTime: 3),
+            MeetingSpeakerSampleTimeMapping(channel: .system, sourceTime: 3, recordingTime: 3)
+        ]
+
+        state.applySampleTimeMappings(mappings)
+        #expect(state.sampleRange(for: mic) == nil)
+
+        state.turns[1] = .init(speaker: system, timestamp: "00:00:05", start: 5, end: 5.5, text: "Later words")
+        let sample = try #require(state.sampleRange(for: mic))
+        #expect(sample == .init(start: 3.5, end: 4.5))
     }
 
     @Test func sqlCloudLikeEditCannotBeUndoneByStaleEpoch() throws {

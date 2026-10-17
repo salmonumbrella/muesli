@@ -517,7 +517,7 @@ final class MuesliICloudSyncEngine {
         let remoteChanges = try await fetchChangedTextRecords()
         var downloaded = ICloudSyncKindCounts()
         let remoteSyncRecords = remoteChanges.records.compactMap(Self.syncTextRecord(from:))
-        for syncRecord in try store.upsertSyncedTextRecords(remoteSyncRecords) {
+        for syncRecord in try upsertRemoteSyncRecords(remoteSyncRecords, store: store) {
             downloaded.increment(syncRecord.kind)
         }
         if let finalToken = remoteChanges.finalToken {
@@ -532,6 +532,26 @@ final class MuesliICloudSyncEngine {
             hasPendingUploads: uploadResult.hasPendingUploads,
             syncedAt: Date()
         )
+    }
+
+    private func upsertRemoteSyncRecords(_ records: [SyncTextRecord], store: DictationStore) throws -> [SyncTextRecord] {
+        var jobsByDeletedName: [String: [MeetingSpeakerLabelingJob]] = [:]
+        var recoveriesByDeletedName: [String: MeetingSpeakerRecoveryRecord] = [:]
+        let recoveryRecords = MeetingSpeakerBacklogAudio().recoveryRecords()
+        for record in records where record.kind == .meeting && record.isDeleted {
+            jobsByDeletedName[record.id] = try store.meetingSpeakerLabelingJobs(forCloudRecordNames: [record.id])
+            if let meetingID = try store.meetingID(forCloudRecordName: record.id),
+               let recovery = recoveryRecords.first(where: { $0.meetingID == meetingID }) {
+                recoveriesByDeletedName[record.id] = recovery
+            }
+        }
+        let applied = try store.upsertSyncedTextRecords(records)
+        let deletedJobs = applied.filter { $0.kind == .meeting && $0.isDeleted }
+            .flatMap { jobsByDeletedName[$0.id] ?? [] }
+        retireDeletedSpeakerLabelingJobs(deletedJobs)
+        retireDeletedSpeakerRecoveryRecords(applied.filter { $0.kind == .meeting && $0.isDeleted }
+            .compactMap { recoveriesByDeletedName[$0.id] })
+        return applied
     }
 
     /// Transitional preflight retained while text-record orchestration moves to
@@ -793,11 +813,11 @@ final class MuesliICloudSyncEngine {
         guard !defaults.bool(forKey: Schema.migratedDefaultZoneKey) else { return }
 
         let legacyDefaultZoneRecords = try await fetchAllDefaultZoneTextRecords()
-        _ = try store.upsertSyncedTextRecords(legacyDefaultZoneRecords.compactMap(Self.syncTextRecord(from:)))
+        _ = try upsertRemoteSyncRecords(legacyDefaultZoneRecords.compactMap(Self.syncTextRecord(from:)), store: store)
 
         changeTokenStore.clearToken()
         let existingSyncZoneChanges = try await fetchChangedTextRecordsUsingStoredToken()
-        _ = try store.upsertSyncedTextRecords(existingSyncZoneChanges.records.compactMap(Self.syncTextRecord(from:)))
+        _ = try upsertRemoteSyncRecords(existingSyncZoneChanges.records.compactMap(Self.syncTextRecord(from:)), store: store)
         if let finalToken = existingSyncZoneChanges.finalToken {
             changeTokenStore.saveToken(finalToken)
         }
@@ -806,7 +826,7 @@ final class MuesliICloudSyncEngine {
 
         changeTokenStore.clearToken()
         let primedSyncZoneChanges = try await fetchChangedTextRecordsUsingStoredToken()
-        _ = try store.upsertSyncedTextRecords(primedSyncZoneChanges.records.compactMap(Self.syncTextRecord(from:)))
+        _ = try upsertRemoteSyncRecords(primedSyncZoneChanges.records.compactMap(Self.syncTextRecord(from:)), store: store)
         if let finalToken = primedSyncZoneChanges.finalToken {
             changeTokenStore.saveToken(finalToken)
         }

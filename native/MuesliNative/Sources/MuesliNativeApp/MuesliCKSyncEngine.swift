@@ -760,7 +760,22 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                     && $0.recordType == MuesliICloudSyncEngine.Schema.textRecordType
             }
             .compactMap(MuesliICloudSyncEngine.syncTextRecord(from:))
-        let appliedRecordIDs = Set(try store.upsertSyncedTextRecords(records).map(\.id))
+        var jobsByDeletedName: [String: [MeetingSpeakerLabelingJob]] = [:]
+        var recoveriesByDeletedName: [String: MeetingSpeakerRecoveryRecord] = [:]
+        let recoveryRecords = MeetingSpeakerBacklogAudio().recoveryRecords()
+        for record in records where record.kind == .meeting && record.isDeleted {
+            jobsByDeletedName[record.id] = try store.meetingSpeakerLabelingJobs(forCloudRecordNames: [record.id])
+            if let meetingID = try store.meetingID(forCloudRecordName: record.id),
+               let recovery = recoveryRecords.first(where: { $0.meetingID == meetingID }) {
+                recoveriesByDeletedName[record.id] = recovery
+            }
+        }
+        let appliedRecords = try store.upsertSyncedTextRecords(records)
+        let appliedRecordIDs = Set(appliedRecords.map(\.id))
+        retireDeletedSpeakerLabelingJobs(appliedRecords.filter { $0.kind == .meeting && $0.isDeleted }
+            .flatMap { jobsByDeletedName[$0.id] ?? [] })
+        retireDeletedSpeakerRecoveryRecords(appliedRecords.filter { $0.kind == .meeting && $0.isDeleted }
+            .compactMap { recoveriesByDeletedName[$0.id] })
         for record in records {
             if !appliedRecordIDs.contains(record.id) {
                 try store.updateTextRecordCloudMetadata(

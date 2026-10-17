@@ -40,6 +40,38 @@ enum CompactMeetingFormattingPolicy {
     }
 }
 
+struct MeetingSpeakerLabelingControls: View {
+    let meetingID: Int64
+    let controller: MuesliController
+    let appState: AppState
+
+    @ViewBuilder
+    var body: some View {
+        if let job = appState.meetingSpeakerLabelingJobs[meetingID] {
+            HStack(spacing: 12) {
+                Text(job.status.message).font(.caption)
+                if job.status == .failed || job.status == .pending {
+                    Button("Retry labels") { controller.retryDeferredSpeakerLabeling(id: meetingID) }
+                }
+                if job.status != .expired {
+                    Button("Discard labeling audio") { controller.discardDeferredSpeakerLabeling(id: meetingID) }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 8)
+        }
+        if appState.meetingSpeakerLabelingRecovery.contains(meetingID) {
+            HStack(spacing: 12) {
+                Text(MeetingSpeakerLabelingStatus.recovery.message).font(.caption)
+                Button("Reveal recovery audio") { controller.revealSpeakerLabelingRecovery(id: meetingID) }
+                Button("Discard recovery audio", role: .destructive) { controller.discardSpeakerLabelingRecovery(id: meetingID) }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 8)
+        }
+    }
+}
+
 struct ResponsiveHorizontalLayout<Wide: View, Compact: View>: View {
     let wideIdentifier: String
     let compactIdentifier: String
@@ -168,6 +200,8 @@ struct MeetingDetailView: View {
                     header(meeting)
 
                     retranscriptionStatus(for: meeting)
+                    MeetingSpeakerLabelingControls(meetingID: meeting.id, controller: controller, appState: appState)
+                        .padding(.horizontal, 40)
 
                     if meeting.status != .recording && meeting.status != .processing {
                         HStack { Spacer(); Button("Ask about this meeting", systemImage: "bubble.left") { controller.showMeetingChat(meetingID: meeting.id) } }
@@ -2254,9 +2288,10 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     static func messages(from transcript: String, startingAt firstID: Int = 0, speakerState: MeetingSpeakerState? = nil) -> [TranscriptChatMessage] {
         if let speakerState, speakerState.isValid, speakerState.render() == transcript {
             let labels = speakerState.labels
-            return speakerState.turns.enumerated().map { index, turn in
+            let prior = messages(from: speakerState.transcriptPrefix ?? "", startingAt: firstID)
+            return prior + speakerState.turns.enumerated().map { index, turn in
                 let key = speakerState.canonicalKey(for: turn.speaker) ?? turn.speaker
-                return TranscriptChatMessage(id: firstID + index, timestamp: turn.timestamp,
+                return TranscriptChatMessage(id: firstID + prior.count + index, timestamp: turn.timestamp,
                     speaker: labels[key], text: turn.text, speakerKey: key,
                     structuredSelf: speakerState.speakers.first { $0.key == key }?.isSelf ?? false,
                     speakerIsPerson: speakerState.speakers.first { $0.key == key }?.isAssignable ?? false)

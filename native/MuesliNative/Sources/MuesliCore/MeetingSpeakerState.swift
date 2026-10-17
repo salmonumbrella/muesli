@@ -47,6 +47,8 @@ public struct MeetingSpeakerTurn: Codable, Equatable, Sendable, Identifiable {
     public let end: Double
     public var text: String
     public var sampleEligible: Bool? = nil
+    /// Offset from the channel-relative transcript clock to the saved mixed recording clock.
+    public var sampleTimeOffset: Double? = nil
     public var originalSpeaker: MeetingSpeakerKey? = nil
     public init(id: UUID = UUID(), speaker: MeetingSpeakerKey, timestamp: String, start: Double, end: Double, text: String) {
         self.id = id; self.speaker = speaker; self.timestamp = timestamp
@@ -61,6 +63,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
     public var revision: Int64
     public var speakers: [MeetingSpeaker]
     public var turns: [MeetingSpeakerTurn]
+    public var transcriptPrefix: String? = nil
     public var voiceProfileID: UUID? = nil
     public var correctionHistory: [MeetingSpeakerCorrectionUndo]? = nil
     public init(epoch: UUID = UUID(), revision: Int64 = 0, speakers: [MeetingSpeaker] = [], turns: [MeetingSpeakerTurn] = []) {
@@ -75,6 +78,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
             && turns.allSatisfy { turn in
                 turn.speaker.epoch == epoch && speakers.contains { $0.key == turn.speaker }
                     && turn.start.isFinite && turn.end.isFinite && turn.start >= 0 && turn.end >= turn.start
+                    && (turn.sampleTimeOffset.map { $0.isFinite && $0 >= 0 } ?? true)
                     && turn.timestamp.count == 8 && turn.timestamp.allSatisfy { $0.isNumber || $0 == ":" }
             }
     }
@@ -127,7 +131,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
 
     public func render() -> String {
         let names = labels
-        return turns.map { "[\($0.timestamp)] \(names[$0.speaker] ?? "Unknown speaker"): \($0.text)" }.joined(separator: "\n")
+        return (transcriptPrefix ?? "") + turns.map { "[\($0.timestamp)] \(names[$0.speaker] ?? "Unknown speaker"): \($0.text)" }.joined(separator: "\n")
     }
 
     public static func digest(_ text: String) -> String {
@@ -150,7 +154,7 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
     }
 }
 
-public struct MeetingTranscriptVersion: Equatable, Sendable {
+public struct MeetingTranscriptVersion: Codable, Equatable, Sendable {
     public let generation: Int64
     public let digest: String
     public init(generation: Int64, digest: String) { self.generation = generation; self.digest = digest }

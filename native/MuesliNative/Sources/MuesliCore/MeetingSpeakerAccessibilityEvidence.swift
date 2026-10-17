@@ -1,13 +1,13 @@
 import Foundation
 
-public enum MeetingSpeakerApp: String, CaseIterable, Sendable {
+public enum MeetingSpeakerApp: String, CaseIterable, Codable, Sendable {
     case zoom, teams, meet, slack
     public var tileMarker: String {
         switch self { case .zoom: "zoom participant"; case .teams: "teams participant"
         case .meet: "video tile"; case .slack: "huddle participant" }
     }
 }
-public enum MeetingSpeakerEvidenceReason: String, Sendable {
+public enum MeetingSpeakerEvidenceReason: String, Codable, Sendable {
     case clear, rosterOnly, unrecognized, truncated, ambiguous, multipleHosts, multipleWindows, unavailable
 }
 public struct MeetingSpeakerAXNode: Sendable {
@@ -30,13 +30,13 @@ public struct MeetingSpeakerAXWindow: Sendable {
         self.scope = scope; self.app = app; self.documentURL = documentURL; self.root = root; self.truncated = truncated
     }
 }
-public struct MeetingSpeakerParticipant: Sendable, Equatable {
+public struct MeetingSpeakerParticipant: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let isSelf: Bool
     public init(id: String, name: String, isSelf: Bool) { self.id = id; self.name = name; self.isSelf = isSelf }
 }
-public struct MeetingSpeakerFrame: Sendable {
+public struct MeetingSpeakerFrame: Codable, Equatable, Sendable {
     public let scope: String
     public let app: MeetingSpeakerApp
     public let participants: [MeetingSpeakerParticipant]
@@ -90,7 +90,7 @@ public enum MeetingSpeakerSources {
         return first
     }
 }
-public struct MeetingSpeakerObservation: Sendable {
+public struct MeetingSpeakerObservation: Codable, Equatable, Sendable {
     public let time: Double
     public let continuity: String
     public let microphoneTime: Double?
@@ -107,10 +107,23 @@ public struct MeetingSpeakerEvidenceAssignments: Sendable {
     public var names: [MeetingSpeakerKey: MeetingSpeakerAssignment] = [:]
     public var explicitSelf: Set<MeetingSpeakerKey> = []
 }
-public struct MeetingSpeakerTimeline: Sendable {
+public struct MeetingSpeakerTimeline: Codable, Equatable, Sendable {
     public var observations: [MeetingSpeakerObservation]
     public var incomplete: Bool
-    public init(observations: [MeetingSpeakerObservation] = [], incomplete: Bool = false) { self.observations = observations; self.incomplete = incomplete }
+    public init(observations: [MeetingSpeakerObservation] = [], incomplete: Bool = false) {
+        self.observations = Array(observations.suffix(14_400)); self.incomplete = incomplete || observations.count > 14_400
+    }
+    public func bounded() -> Self {
+        let retained = observations.suffix(14_400).map { observation in
+            let active = observation.frame.active
+            let frame = MeetingSpeakerFrame(scope: observation.frame.scope, app: observation.frame.app,
+                                            participants: active.map { [$0] } ?? [],
+                                            activeID: observation.frame.activeID, reason: observation.frame.reason)
+            return MeetingSpeakerObservation(time: observation.time, continuity: observation.continuity,
+                                             frame: frame, microphoneTime: observation.microphoneTime)
+        }
+        return .init(observations: Array(retained), incomplete: incomplete || observations.count > 14_400)
+    }
     public func assignments(activities: [MeetingSpeakerActivity], channel: MeetingSpeakerKey.Channel = .system) -> MeetingSpeakerEvidenceAssignments {
         if channel == .microphone, observations.contains(where: { $0.microphoneTime == nil }) { return .init() }
         let observations = channel == .microphone ? self.observations.map { MeetingSpeakerObservation(time: $0.microphoneTime ?? .nan, continuity: $0.continuity, frame: $0.frame) } : self.observations
