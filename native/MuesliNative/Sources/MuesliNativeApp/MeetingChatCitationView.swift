@@ -13,8 +13,23 @@ struct MeetingChatDocumentTarget {
         let found = ns.range(of: citation.excerpt)
         return found.location == NSNotFound ? nil : found
     }
-    static func transcriptMessageID(in text: String, range: NSRange) -> Int? {
+    static func transcriptMessageID(
+        in text: String,
+        range: NSRange,
+        speakerState: MeetingSpeakerState? = nil
+    ) -> Int? {
         guard range.location >= 0, range.location < (text as NSString).length else { return nil }
+        if let speakerState, speakerState.isValid, speakerState.render() == text {
+            let labels = speakerState.labels
+            var turnStart = 0
+            for (turnID, turn) in speakerState.turns.enumerated() {
+                let renderedTurn = "[\(turn.timestamp)] \(labels[turn.speaker] ?? "Unknown speaker"): \(turn.text)"
+                let turnLength = (renderedTurn as NSString).length
+                if range.location >= turnStart && range.location < turnStart + turnLength { return turnID }
+                turnStart += turnLength + 1
+            }
+            return nil
+        }
         var nextID = 0
         var result: Int?
         text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .byLines) { line, lineRange, _, _ in
@@ -24,6 +39,22 @@ struct MeetingChatDocumentTarget {
             nextID += 1
         }
         return result
+    }
+}
+
+enum MeetingTranscriptScrollTarget {
+    static func messageID(
+        highlightedRange: NSRange?,
+        transcript: String,
+        messages: [TranscriptChatMessage],
+        speakerState: MeetingSpeakerState? = nil
+    ) -> Int? {
+        guard let highlightedRange,
+              let messageID = MeetingChatDocumentTarget.transcriptMessageID(
+                in: transcript, range: highlightedRange, speakerState: speakerState
+              ),
+              messages.contains(where: { $0.id == messageID }) else { return nil }
+        return messageID
     }
 }
 

@@ -12,29 +12,29 @@ struct MeetingSpeakerSelfTests {
         #expect(state.labels[a] == "Example 🌿 (You)")
         #expect(state.speakers.filter(\.isSelf).count == 1)
         other.applySelfEvidence(accessibility: [b], voice: [a], ownerName: "Example", profileID: profile)
-        #expect(!other.speakers.contains(where: \.isSelf))
+        #expect(!other.speakers.contains(where: { $0.isSelf }))
         other.applySelfEvidence(accessibility: [a], voice: [], ownerName: "Example", profileID: nil)
-        #expect(!other.speakers.contains(where: \.isSelf)) // endpoint self cannot identify a shared-mic human
+        #expect(!other.speakers.contains(where: { $0.isSelf })) // endpoint self cannot identify a shared-mic human
         other.applySelfEvidence(accessibility: [], voice: [a, b], ownerName: "Example", profileID: profile)
-        #expect(!other.speakers.contains(where: \.isSelf))
+        #expect(!other.speakers.contains(where: { $0.isSelf }))
     }
     @Test func bareSelfCanBeDeclinedAndRevokedWithoutLosingManualName() {
         var state = fixture()
         let a = state.speakers[0].key, b = state.speakers[1].key
         state.applySelfEvidence(accessibility: [], voice: [a], ownerName: "", profileID: UUID())
         #expect(state.labels[a] == "You")
-        #expect(state.correct(.declineName(a)))
+        #expect(state.correct(.declineName(a)) == true)
         #expect(!state.speakers[0].isSelf)
         state.applySelfEvidence(accessibility: [], voice: [a], ownerName: "", profileID: UUID())
         #expect(!state.speakers[0].isSelf)
-        #expect(state.correct(.undo))
-        #expect(state.correct(.rename(b, "Manual")))
-        #expect(state.correct(.merge(a, into: b)))
+        #expect(state.correct(.undo) == true)
+        #expect(state.correct(.rename(b, "Manual")) == true)
+        #expect(state.correct(.merge(a, into: b)) == true)
         state.removeSelfEvidence()
         #expect(state.labels[b] == "Manual")
-        #expect(!state.speakers.contains(where: \.isSelf))
+        #expect(!state.speakers.contains(where: { $0.isSelf }))
         _ = state.correct(.undo)
-        #expect(!state.speakers.contains(where: \.isSelf))
+        #expect(!state.speakers.contains(where: { $0.isSelf }))
     }
     @Test func separateClockAndDefaultOff() throws {
         #expect(!AppConfig().enableMeetingOwnerRecognition)
@@ -62,6 +62,47 @@ struct MeetingSpeakerSelfTests {
         #expect(revoked.rawTranscript.hasPrefix(prior))
         #expect(revoked.title == "Manual")
         #expect(!revoked.summaryIsCurrent)
+    }
+
+    @Test func newlyGrantedAuthorizationsDoNotInvalidateEvidenceThatWasNotCaptured() {
+        let captured = UUID()
+        #expect(MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: nil,
+            currentAccessibility: UUID(),
+            capturedOwnerRecognition: nil,
+            currentOwnerRecognition: UUID()
+        ))
+        #expect(MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: captured,
+            currentAccessibility: captured,
+            capturedOwnerRecognition: captured,
+            currentOwnerRecognition: captured
+        ))
+        #expect(!MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: captured,
+            currentAccessibility: nil,
+            capturedOwnerRecognition: nil,
+            currentOwnerRecognition: nil
+        ))
+        #expect(!MeetingSpeakerAuthorizationSnapshot.matches(
+            capturedAccessibility: nil,
+            currentAccessibility: nil,
+            capturedOwnerRecognition: captured,
+            currentOwnerRecognition: UUID()
+        ))
+    }
+
+    @Test func resumeSummaryOverrideTracksCombinedSummaryOutcome() {
+        let result = MeetingSessionResult(title: "Generated", originalTitle: "Manual", calendarEventID: nil,
+            startTime: Date(), endTime: Date(), durationSeconds: 3, rawTranscript: "New speech", formattedNotes: "Session notes",
+            retainedRecordingURL: nil, retainedRecordingError: nil, systemRecordingURL: nil, templateSnapshot: MeetingTemplates.auto.snapshot,
+            summaryIsCurrent: false)
+
+        let regenerated = result.overriding(rawTranscript: "Prior and new speech", formattedNotes: "Combined notes", summaryIsCurrent: true)
+        let failed = result.overriding(rawTranscript: "Prior and new speech", formattedNotes: "Failure notes", summaryIsCurrent: false)
+
+        #expect(regenerated.summaryIsCurrent)
+        #expect(!failed.summaryIsCurrent)
     }
     @Test @MainActor func provisionalMicrophoneIsNeutral() {
         let model = LiveTranscriptPresentationModel()

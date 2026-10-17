@@ -43,7 +43,7 @@ struct MeetingSpeakerAccessibilityTests {
         timeline.apply(activities: activity, to: &state)
         #expect(state.labels[key] == "Example")
         #expect(state.turns[0].text == "Words")
-        #expect(state.assign(.init(name: "Manual", provenance: .manual), to: key))
+        #expect(state.assign(.init(name: "Manual", provenance: .manual), to: key) == true)
         timeline.apply(activities: activity, to: &state)
         #expect(state.labels[key] == "Manual")
         let reset = MeetingSpeakerTimeline(observations: [observations[0], observations[1], observations[0], observations[2], observations[3]])

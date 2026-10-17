@@ -55,7 +55,8 @@ enum TranscriptFormatter {
                     for: segment,
                     in: localDiarization,
                     labelMap: micSpeakerLabelMap,
-                    fallback: "Local speaker"
+                    fallback: "Local speaker",
+                    requiresCoverageForSingleSpeaker: true
                 )
                 return TaggedSegment(segment: segment, speaker: speaker)
             }
@@ -195,11 +196,14 @@ enum TranscriptFormatter {
         for segment: SpeechSegment,
         in diarizationSegments: [TimedSpeakerSegment],
         labelMap: [String: String],
-        fallback: String
+        fallback: String,
+        requiresCoverageForSingleSpeaker: Bool = false
     ) -> String {
-        if labelMap.count == 1 {
+        if labelMap.count == 1, !requiresCoverageForSingleSpeaker {
             return labelMap.values.first ?? fallback
         }
+        // Owner recognition can retain one mic identity while filtering brief guests, so
+        // each mic turn still needs nearby diarizer coverage before receiving that identity.
         guard let speakerID = SpeakerAttribution.speakerID(for: segment, in: diarizationSegments) else {
             return fallback
         }

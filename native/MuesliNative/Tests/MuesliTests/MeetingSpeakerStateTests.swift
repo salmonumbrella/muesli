@@ -7,11 +7,11 @@ struct MeetingSpeakerStateTests {
     @Test func manualAssignmentAndDeclineSurviveRoundtrip() throws {
         var state = fixture()
         let key = state.speakers[0].key
-        #expect(state.assign(.init(name: "Example", provenance: .accessibility), to: key))
+        #expect(state.assign(.init(name: "Example", provenance: .accessibility), to: key) == true)
         state.declineAutomaticName(for: key)
-        #expect(!state.assign(.init(name: "Example", provenance: .accessibility), to: key))
-        #expect(state.assign(.init(name: "手動", provenance: .manual), to: key))
-        #expect(!state.assign(.init(name: "Other", provenance: .voice), to: key))
+        #expect(state.assign(.init(name: "Example", provenance: .accessibility), to: key) == false)
+        #expect(state.assign(.init(name: "手動", provenance: .manual), to: key) == true)
+        #expect(state.assign(.init(name: "Other", provenance: .voice), to: key) == false)
         let restored = try JSONDecoder().decode(MeetingSpeakerState.self, from: JSONEncoder().encode(state))
         #expect(restored.render() == "[00:00:01] 手動: Keep these words.")
         #expect(restored.speakers[0].key == key)
@@ -47,7 +47,7 @@ struct MeetingSpeakerStateTests {
     @Test func aggregatesCannotBeNamed() {
         var state = fixture()
         state.speakers[0].isAssignable = false
-        #expect(!state.assign(.init(name: "Example", provenance: .manual), to: state.speakers[0].key))
+        #expect(state.assign(.init(name: "Example", provenance: .manual), to: state.speakers[0].key) == false)
     }
 
     private func fixture() -> MeetingSpeakerState {

@@ -42,6 +42,15 @@ struct TranscriptChatMessageTests {
         #expect(!messages[1].isUser)
     }
 
+    @Test("timestamped custom speaker labels survive without structured state")
+    func timestampedCustomSpeakerLabels() {
+        let messages = TranscriptChatMessage.messages(from: "[00:00:01] Alice: Hello there.")
+
+        #expect(messages.count == 1)
+        #expect(messages[0].speaker == "Alice")
+        #expect(messages[0].text == "Hello there.")
+    }
+
     @Test("plain transcript lines are preserved")
     func plainTranscriptLinesArePreserved() {
         let messages = TranscriptChatMessage.messages(from: """
@@ -58,6 +67,42 @@ struct TranscriptChatMessageTests {
 }
 
 extension TranscriptChatMessageTests {
+    @Test func multilineStructuredTurnsKeepCitationIdentity() throws {
+        let epoch = UUID()
+        let first = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "first")
+        let second = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "second")
+        let state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: first, rank: 1, fallbackLabel: "Speaker 1"),
+                       .init(key: second, rank: 2, fallbackLabel: "Speaker 2")],
+            turns: [.init(speaker: first, timestamp: "00:00:01", start: 1, end: 2, text: "First line\ncontinued first line"),
+                    .init(speaker: second, timestamp: "00:00:03", start: 3, end: 4, text: "Second turn")])
+        let transcript = state.render()
+        let messages = TranscriptChatMessage.messages(from: transcript, speakerState: state)
+        let continued = (transcript as NSString).range(of: "continued first line")
+        let secondTurn = (transcript as NSString).range(of: "Second turn")
+
+        #expect(MeetingTranscriptScrollTarget.messageID(
+            highlightedRange: continued, transcript: transcript, messages: messages, speakerState: state
+        ) == 0)
+        #expect(MeetingTranscriptScrollTarget.messageID(
+            highlightedRange: secondTurn, transcript: transcript, messages: messages, speakerState: state
+        ) == 1)
+    }
+
+    @Test func transcriptCitationScrollTargetWaitsForRowsToLoad() throws {
+        let transcript = """
+        [00:00:01] Speaker 1: First sentence.
+
+        [00:00:03] Speaker 2: Cited sentence.
+        """
+        let range = (transcript as NSString).range(of: "Cited sentence")
+        let expectedID = try #require(MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: range))
+        let messages = TranscriptChatMessage.messages(from: transcript)
+
+        #expect(MeetingTranscriptScrollTarget.messageID(highlightedRange: range, transcript: transcript, messages: []) == nil)
+        #expect(MeetingTranscriptScrollTarget.messageID(highlightedRange: range, transcript: transcript, messages: messages) == expectedID)
+    }
+
     @Test func structuredMessagesKeepIdentityAndColonNames() {
         let epoch = UUID()
         let a = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "a")

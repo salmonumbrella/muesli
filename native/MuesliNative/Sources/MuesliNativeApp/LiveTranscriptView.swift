@@ -122,13 +122,15 @@ final class LiveTranscriptPresentationModel {
 
     private var speakerState: MeetingSpeakerState?
 
-    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil, microphoneLabel: String = "You") {
+    func update(transcript: String, partialYou: String, partialOthers: String, speakerState: MeetingSpeakerState? = nil, microphoneLabel: String = "You", transcriptPrefix: String = "") {
         let stateChanged = self.speakerState != speakerState
         guard self.transcript != transcript || self.partialYou != partialYou ||
                 self.partialOthers != partialOthers || self.microphoneLabel != microphoneLabel || stateChanged else { return }
         if transcript != self.transcript || stateChanged {
-            if let speakerState, speakerState.isValid, speakerState.render() == transcript {
-                messages = TranscriptChatMessage.messages(from: transcript, speakerState: speakerState)
+            if let speakerState, speakerState.isValid,
+               (transcriptPrefix.isEmpty ? speakerState.render() : MeetingResumePolicy.combinedResumeTranscript(prior: transcriptPrefix, new: speakerState.render())) == transcript {
+                let prior = TranscriptChatMessage.messages(from: transcriptPrefix)
+                messages = prior + TranscriptChatMessage.messages(from: speakerState.render(), startingAt: prior.count, speakerState: speakerState)
             } else if !stateChanged && self.speakerState == nil && transcript.hasPrefix(self.transcript) {
                 let appended = String(transcript.dropFirst(self.transcript.count))
                 messages.append(contentsOf: TranscriptChatMessage.messages(from: appended, startingAt: messages.count))
@@ -232,6 +234,7 @@ struct LiveTranscriptView: View {
     var partialOthers: String = ""
     var speakerState: MeetingSpeakerState? = nil
     var microphoneLabel: String = "You"
+    var transcriptPrefix: String = ""
     @State private var presentation = LiveTranscriptPresentationModel()
     @State private var didCopy = false
 
@@ -262,7 +265,7 @@ struct LiveTranscriptView: View {
                         transcript: newTranscript,
                         partialYou: partialYou,
                         partialOthers: partialOthers,
-                        speakerState: speakerState, microphoneLabel: microphoneLabel
+                        speakerState: speakerState, microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.15)) {
@@ -279,7 +282,7 @@ struct LiveTranscriptView: View {
                         transcript: transcript,
                         partialYou: new,
                         partialOthers: partialOthers,
-                        speakerState: speakerState, microphoneLabel: microphoneLabel
+                        speakerState: speakerState, microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -291,7 +294,7 @@ struct LiveTranscriptView: View {
                         transcript: transcript,
                         partialYou: partialYou,
                         partialOthers: new,
-                        speakerState: speakerState, microphoneLabel: microphoneLabel
+                        speakerState: speakerState, microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -300,14 +303,14 @@ struct LiveTranscriptView: View {
                 }
                 .onChange(of: speakerState) { _, _ in
                     presentation.update(transcript: transcript, partialYou: partialYou,
-                                        partialOthers: partialOthers, speakerState: speakerState, microphoneLabel: microphoneLabel)
+                                        partialOthers: partialOthers, speakerState: speakerState, microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix)
                 }
                 .onAppear {
                     presentation.update(
                         transcript: transcript,
                         partialYou: partialYou,
                         partialOthers: partialOthers,
-                        speakerState: speakerState, microphoneLabel: microphoneLabel
+                        speakerState: speakerState, microphoneLabel: microphoneLabel, transcriptPrefix: transcriptPrefix
                     )
                     DispatchQueue.main.async {
                         proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)

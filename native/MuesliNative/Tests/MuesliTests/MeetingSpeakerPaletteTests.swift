@@ -72,7 +72,7 @@ extension MeetingSpeakerPaletteTests {
             speakers: [.init(key: key, rank: 1, fallbackLabel: "Speaker 1")],
             turns: [.init(speaker: key, timestamp: "00:00:01", start: 1, end: 2, text: "Words")])
         let original = MeetingSpeakerPalette.colour(for: key, isSelf: false, isPerson: true)
-        #expect(state.assign(.init(name: "Example", provenance: .manual), to: key))
+        #expect(state.assign(.init(name: "Example", provenance: .manual), to: key) == true)
         let live = LiveTranscriptPresentationModel(), floating = FloatingMeetingTranscriptModel()
         live.update(transcript: state.render(), partialYou: "", partialOthers: "", speakerState: state)
         floating.update(transcript: state.render(), partialYou: "", partialOthers: "", speakerState: state)

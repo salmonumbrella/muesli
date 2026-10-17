@@ -6,7 +6,7 @@ struct ReconciledTranscriptInputs {
     let micSegments: [SpeechSegment]
     let systemSegments: [SpeechSegment]
     let diarizationSegments: [TimedSpeakerSegment]?
-    /// Significant in-room speakers only; nil when the mic channel stays "You".
+    /// Significant in-room speakers; a single cluster is kept when owner matching needs its ID.
     var micDiarizationSegments: [TimedSpeakerSegment]? = nil
 }
 
@@ -37,9 +37,13 @@ enum TranscriptReconciler {
         micTurns: [SpeechSegment],
         systemSegments: [SpeechSegment],
         diarizationSegments: [TimedSpeakerSegment]?,
-        micDiarizationSegments: [TimedSpeakerSegment]? = nil
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil,
+        preserveSingleMicSpeakerIdentity: Bool = false
     ) -> ReconciledTranscriptInputs {
-        let localDiarization = SpeakerAttribution.localDiarization(from: micDiarizationSegments)
+        let localDiarization = SpeakerAttribution.localDiarization(
+            from: micDiarizationSegments,
+            preserveSingleSpeakerIdentity: preserveSingleMicSpeakerIdentity
+        )
         let micSpeaker = micSpeakerResolver(for: localDiarization)
         // With several local speakers, attribute per sentence before merging back.
         let attributableMicTurns = micSpeaker == nil ? micTurns : MicTurnNormalizer.sentenceSegments(micTurns)

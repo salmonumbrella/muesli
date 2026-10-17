@@ -75,7 +75,9 @@ private struct LiveTranscriptSection: View {
             ),
             partialYou: appState.liveMeetingPartialYou,
             partialOthers: appState.liveMeetingPartialOthers,
-            microphoneLabel: appState.liveMeetingMicrophoneLabel
+            speakerState: appState.liveMeetingSpeakerState,
+            microphoneLabel: appState.liveMeetingMicrophoneLabel,
+            transcriptPrefix: transcriptPrefix
         )
     }
 }
@@ -2283,7 +2285,7 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
             let remainderStart = line.index(after: timestampEnd)
             let remainder = line[remainderStart...]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let speakerText = splitSpeakerAndText(remainder)
+            let speakerText = splitSpeakerAndText(remainder, allowsCustomLabel: true)
             return TranscriptChatMessage(
                 id: id,
                 timestamp: timestamp.isEmpty ? nil : timestamp,
@@ -2301,13 +2303,13 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
         )
     }
 
-    private static func splitSpeakerAndText(_ text: String) -> (speaker: String?, text: String) {
+    private static func splitSpeakerAndText(_ text: String, allowsCustomLabel: Bool = false) -> (speaker: String?, text: String) {
         guard let separator = text.firstIndex(of: ":") else {
             return (nil, text)
         }
 
         let candidate = text[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isLikelySpeakerLabel(candidate) else {
+        guard allowsCustomLabel || isLikelySpeakerLabel(candidate) else {
             return (nil, text)
         }
 
@@ -2319,6 +2321,7 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     private static func isLikelySpeakerLabel(_ label: String) -> Bool {
         guard !label.isEmpty, label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
+        if label.localizedCaseInsensitiveCompare("Microphone") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Multiple speakers") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Unknown speaker") == .orderedSame { return true }
@@ -2369,8 +2372,9 @@ private struct MeetingTranscriptView: View {
             .padding(.vertical, MuesliTheme.spacing16)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .onAppear { if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
-        .onChange(of: highlightedRange) { _, _ in if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
+        .onAppear { scrollToHighlightedMessage(using: proxy) }
+        .onChange(of: highlightedRange) { _, _ in scrollToHighlightedMessage(using: proxy) }
+        .onChange(of: messages) { _, _ in scrollToHighlightedMessage(using: proxy) }
         .task(id: TranscriptPresentationInput(transcript: transcript, state: speakerState)) {
             let input = TranscriptPresentationInput(transcript: transcript, state: speakerState)
             let loaded = await Task.detached(priority: .userInitiated) {
@@ -2382,8 +2386,15 @@ private struct MeetingTranscriptView: View {
         }
     }
     private var highlightedMessageID: Int? {
-        guard let range = highlightedRange else { return nil }
-        return MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: range)
+        MeetingTranscriptScrollTarget.messageID(
+            highlightedRange: highlightedRange,
+            transcript: transcript,
+            messages: messages,
+            speakerState: speakerState
+        )
+    }
+    private func scrollToHighlightedMessage(using proxy: ScrollViewProxy) {
+        if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) }
     }
 }
 
