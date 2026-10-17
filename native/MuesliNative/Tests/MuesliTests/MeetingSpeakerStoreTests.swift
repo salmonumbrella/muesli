@@ -97,3 +97,22 @@ struct MeetingSpeakerStoreTests {
         return (store, id, state)
     }
 }
+
+extension MeetingSpeakerStoreTests {
+    @Test func correctionUsesTheSnapshotThatProducedIt() throws {
+        let (store, id, state) = try fixture()
+        let version = try #require(store.meetingTranscriptVersion(id: id))
+        #expect(try store.installMeetingSpeakerState(id: id, state: state, expected: version) == .updated)
+        let captured = try #require(store.meetingSpeakerSnapshot(id: id))
+        var first = captured.state, stale = captured.state
+        #expect(first.correct(.rename(state.speakers[0].key, "First")))
+        #expect(stale.correct(.rename(state.speakers[0].key, "Stale")))
+        #expect(try store.updateMeetingSpeakerState(id: id, state: first, expected: captured) == .updated)
+        #expect(try store.updateMeetingSpeakerState(id: id, state: stale, expected: captured) == .conflict)
+        let current = try #require(store.meetingSpeakerSnapshot(id: id))
+        var undone = current.state
+        #expect(undone.correct(.undo))
+        #expect(try store.updateMeetingSpeakerState(id: id, state: undone, expected: current) == .updated)
+        #expect(try store.meeting(id: id)?.rawTranscript == "[00:00:01] Speaker 1: Original words")
+    }
+}

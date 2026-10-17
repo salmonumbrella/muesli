@@ -93,6 +93,7 @@ struct MeetingDetailView: View {
     let onBack: (() -> Void)?
     let backLabel: String
     @Environment(\.usesCompactQuickNotes) private var usesCompactQuickNotes
+    @State private var showSpeakerEditor = false
     @State private var isSummarizing = false
     @State private var speakerSnapshot: MeetingSpeakerSnapshot?
     @State private var speakerSnapshotMeetingID: Int64?
@@ -229,6 +230,9 @@ struct MeetingDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(MuesliTheme.backgroundBase)
             }
+        }
+        .sheet(isPresented: $showSpeakerEditor) {
+            if let meeting { MeetingSpeakerEditorView(meeting: meeting, controller: controller, appState: appState) }
         }
         .alert("Couldn't Save Summary", isPresented: summaryErrorBinding) {
             Button("OK", role: .cancel) {
@@ -1020,6 +1024,8 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func contentToolbar(for meeting: MeetingRecord) -> some View {
         HStack {
+            Button("Speakers", systemImage: "person.2") { showSpeakerEditor = true }
+                .disabled(meeting.status == .recording || meeting.status == .processing)
             Spacer()
 
             Button(action: {
@@ -2246,10 +2252,11 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
         if let speakerState, speakerState.isValid, speakerState.render() == transcript {
             let labels = speakerState.labels
             return speakerState.turns.enumerated().map { index, turn in
-                TranscriptChatMessage(id: firstID + index, timestamp: turn.timestamp,
-                    speaker: labels[turn.speaker], text: turn.text, speakerKey: turn.speaker,
-                    structuredSelf: speakerState.speakers.first { $0.key == turn.speaker }?.isSelf ?? false,
-                    speakerIsPerson: speakerState.speakers.first { $0.key == turn.speaker }?.isAssignable ?? false)
+                let key = speakerState.canonicalKey(for: turn.speaker) ?? turn.speaker
+                return TranscriptChatMessage(id: firstID + index, timestamp: turn.timestamp,
+                    speaker: labels[key], text: turn.text, speakerKey: key,
+                    structuredSelf: speakerState.speakers.first { $0.key == key }?.isSelf ?? false,
+                    speakerIsPerson: speakerState.speakers.first { $0.key == key }?.isAssignable ?? false)
             }
         }
         let normalized = transcript.replacingOccurrences(of: "\r\n", with: "\n")
