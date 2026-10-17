@@ -2236,6 +2236,7 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     let text: String
     var speakerKey: MeetingSpeakerKey? = nil
     var structuredSelf: Bool? = nil
+    var speakerIsPerson: Bool? = nil
 
     var isUser: Bool {
         structuredSelf ?? (speaker?.localizedCaseInsensitiveCompare("You") == .orderedSame)
@@ -2247,7 +2248,8 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
             return speakerState.turns.enumerated().map { index, turn in
                 TranscriptChatMessage(id: firstID + index, timestamp: turn.timestamp,
                     speaker: labels[turn.speaker], text: turn.text, speakerKey: turn.speaker,
-                    structuredSelf: speakerState.speakers.first { $0.key == turn.speaker }?.isSelf ?? false)
+                    structuredSelf: speakerState.speakers.first { $0.key == turn.speaker }?.isSelf ?? false,
+                    speakerIsPerson: speakerState.speakers.first { $0.key == turn.speaker }?.isAssignable ?? false)
             }
         }
         let normalized = transcript.replacingOccurrences(of: "\r\n", with: "\n")
@@ -2386,7 +2388,7 @@ struct TranscriptChatBubble: View {
                 if let metadata = metadata {
                     Text(metadata)
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .foregroundStyle(speakerTint)
                         .textSelection(.enabled)
                 }
                 Text(message.text)
@@ -2397,11 +2399,11 @@ struct TranscriptChatBubble: View {
             }
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 8)
-            .background(message.isUser ? MuesliTheme.accent.opacity(0.18) : MuesliTheme.surfacePrimary)
+            .background(MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             .overlay(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(message.isUser ? MuesliTheme.accent.opacity(0.25) : MuesliTheme.surfaceBorder, lineWidth: 1)
+                    .strokeBorder(speakerTint.opacity(0.45), lineWidth: 1)
             )
             .frame(maxWidth: 680, alignment: message.isUser ? .trailing : .leading)
 
@@ -2410,6 +2412,11 @@ struct TranscriptChatBubble: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: message.isUser ? .trailing : .leading)
+    }
+
+    private var speakerTint: Color {
+        MeetingSpeakerStyle.colour(for: message.speakerKey, isSelf: message.isUser,
+                                  isPerson: message.speakerIsPerson ?? false)
     }
 
     private var metadata: String? {

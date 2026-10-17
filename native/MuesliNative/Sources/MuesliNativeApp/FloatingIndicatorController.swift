@@ -515,12 +515,14 @@ final class FloatingIndicatorController: NSObject {
     func updateMeetingTranscript(
         transcript: String,
         partialYou: String,
-        partialOthers: String
+        partialOthers: String,
+        speakerState: MeetingSpeakerState? = nil
     ) {
         meetingTranscriptPanel.update(
             transcript: transcript,
             partialYou: partialYou,
-            partialOthers: partialOthers
+            partialOthers: partialOthers,
+            speakerState: speakerState
         )
     }
 
