@@ -87,6 +87,26 @@ struct TranscriptFormatterTests {
         #expect(lines[0].contains("Others: Hello world"))
     }
 
+    @Test("final meeting conversion sees phrase context across adjacent chunks")
+    func finalTraditionalMeetingConversion() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [
+                SpeechSegment(start: 0, end: 5, text: "头"),
+                SpeechSegment(start: 5, end: 10, text: "发"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil
+        )
+        let rawTranscript = TranscriptFormatter.merge(
+            micSegments: reconciled.micSegments,
+            systemSegments: [],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        let finalTranscript = ChineseTranscriptionOutput.apply(rawTranscript, language: "zh-TW")
+        #expect(finalTranscript.contains("You: 頭髮"))
+    }
+
     @Test("consolidation splits on speaker change")
     func consolidationSplitsOnSpeakerChange() {
         let meetingStart = Date(timeIntervalSince1970: 0)
