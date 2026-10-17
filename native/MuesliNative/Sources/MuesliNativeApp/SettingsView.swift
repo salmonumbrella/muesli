@@ -2065,6 +2065,16 @@ struct SettingsView: View {
                     settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Identify Phone app callers (experimental)") {
+                    settingsSwitch(isOn: appState.config.identifyPhoneCallers, accessibilityLabel: "Identify Phone app callers") { newValue in
+                        controller.updateConfig { $0.identifyPhoneCallers = newValue }
+                    }
+                }
+                settingsDescription("Uses Accessibility to read the number or email shown for an active call in the macOS 26 Phone app when Phone is frontmost as recording starts. Stays on this Mac.")
+                if appState.config.identifyPhoneCallers && !accessibilityGranted {
+                    settingsDescription("Grant Accessibility access in System Settings → Privacy & Security.")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsControl("recording_policy")
                 }
@@ -3144,6 +3154,26 @@ struct SettingsView: View {
 
     private func settingsControl(_ id: String) -> some View {
         MuesliSettingControl(controller: controller, id: id)
+    }
+
+    @ViewBuilder
+    private func settingsSwitch(
+        isOn: Bool,
+        accessibilityLabel: String? = nil,
+        onChange: @escaping (Bool) -> Void
+    ) -> some View {
+        HStack {
+            Spacer()
+            let toggle = Toggle("", isOn: Binding(get: { isOn }, set: { onChange($0) }))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            if let accessibilityLabel {
+                toggle.accessibilityLabel(accessibilityLabel)
+            } else {
+                toggle
+            }
+        }
     }
 
     @ViewBuilder
