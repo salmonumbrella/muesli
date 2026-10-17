@@ -104,6 +104,24 @@ struct MeetingChatNavigationTests {
         #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: repeated) == 2)
     }
 
+    @Test func transcriptLocatorTracksStructuredMultilineTurns() {
+        let epoch = UUID()
+        let first = MeetingSpeakerKey(epoch: epoch, channel: .system, clusterID: "first")
+        let second = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "second")
+        var state = MeetingSpeakerState(epoch: epoch,
+            speakers: [.init(key: first, rank: 1, fallbackLabel: "Speaker 1"),
+                       .init(key: second, rank: 2, fallbackLabel: "Local speaker 1")],
+            turns: [.init(speaker: first, timestamp: "00:00:01", start: 1, end: 2, text: "First line\ncontinued line"),
+                    .init(speaker: second, timestamp: "00:00:03", start: 3, end: 4, text: "Next turn")])
+        state.transcriptPrefix = "[00:00:00] Previous: Earlier text\n"
+        let text = state.render()
+        let continuedLine = (text as NSString).range(of: "continued line")
+        let nextTurn = (text as NSString).range(of: "Next turn")
+
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: continuedLine, speakerState: state) == 1)
+        #expect(MeetingChatDocumentTarget.transcriptMessageID(in: text, range: nextTurn, speakerState: state) == 2)
+    }
+
     @Test func historicalScopeLabelsRetainFolderNameAndBothDateBounds() async throws {
         let (_, store, _) = try controllerFixture()
         let folder = try store.createFolder(name: "Original project")

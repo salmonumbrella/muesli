@@ -13,8 +13,32 @@ struct MeetingChatDocumentTarget {
         let found = ns.range(of: citation.excerpt)
         return found.location == NSNotFound ? nil : found
     }
-    static func transcriptMessageID(in text: String, range: NSRange) -> Int? {
+    static func transcriptMessageID(in text: String, range: NSRange, speakerState: MeetingSpeakerState? = nil) -> Int? {
         guard range.location >= 0, range.location < (text as NSString).length else { return nil }
+        let fullText = text as NSString
+        if let speakerState, speakerState.isValid, speakerState.render() == text {
+            let prefix = speakerState.transcriptPrefix ?? ""
+            let prefixLength = (prefix as NSString).length
+            if range.location < prefixLength {
+                return transcriptMessageID(in: prefix, range: range)
+            }
+            var cursor = prefixLength
+            var messageID = TranscriptChatMessage.messages(from: prefix).count
+            let labels = speakerState.labels
+            for turn in speakerState.turns {
+                let key = speakerState.canonicalKey(for: turn.speaker) ?? turn.speaker
+                let renderedTurn = "[\(turn.timestamp)] \(labels[key] ?? "Unknown speaker"): \(turn.text)"
+                let searchRange = NSRange(location: cursor, length: fullText.length - cursor)
+                let turnRange = fullText.range(of: renderedTurn, options: [], range: searchRange)
+                guard turnRange.location != NSNotFound else { return nil }
+                if range.location >= turnRange.location && range.location < NSMaxRange(turnRange) {
+                    return messageID
+                }
+                cursor = NSMaxRange(turnRange)
+                messageID += 1
+            }
+            return nil
+        }
         var nextID = 0
         var result: Int?
         text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .byLines) { line, lineRange, _, _ in

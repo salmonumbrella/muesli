@@ -2405,8 +2405,9 @@ private struct MeetingTranscriptView: View {
             .padding(.vertical, MuesliTheme.spacing16)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .onAppear { if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
-        .onChange(of: highlightedRange) { _, _ in if let id = highlightedMessageID { proxy.scrollTo(id, anchor: .center) } }
+        .onAppear { scrollToHighlightedMessage(using: proxy) }
+        .onChange(of: highlightedRange) { _, _ in scrollToHighlightedMessage(using: proxy) }
+        .onChange(of: messages) { _, _ in scrollToHighlightedMessage(using: proxy) }
         .task(id: TranscriptPresentationInput(transcript: transcript, state: speakerState)) {
             let input = TranscriptPresentationInput(transcript: transcript, state: speakerState)
             let loaded = await Task.detached(priority: .userInitiated) {
@@ -2419,7 +2420,12 @@ private struct MeetingTranscriptView: View {
     }
     private var highlightedMessageID: Int? {
         guard let range = highlightedRange else { return nil }
-        return MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: range)
+        return MeetingChatDocumentTarget.transcriptMessageID(in: transcript, range: range, speakerState: speakerState)
+    }
+
+    private func scrollToHighlightedMessage(using proxy: ScrollViewProxy) {
+        guard let id = highlightedMessageID, messages.contains(where: { $0.id == id }) else { return }
+        proxy.scrollTo(id, anchor: .center)
     }
 }
 

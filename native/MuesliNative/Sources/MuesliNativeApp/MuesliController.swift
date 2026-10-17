@@ -5953,6 +5953,8 @@ public final class MuesliController: NSObject {
                   transcriptVersion.digest == MeetingSpeakerState.digest(meeting.rawTranscript) else {
                 completion(.failure(MeetingRetranscriptionError.recordingUnavailable)); return
             }
+            let speakerSnapshot = try? self.dictationStore.meetingSpeakerSnapshot(id: meeting.id)
+            let speakerOwnership = MeetingSummarySpeakerOwnership(snapshot: speakerSnapshot, transcript: meeting.rawTranscript, expected: transcriptVersion)
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
             do {
@@ -5964,6 +5966,7 @@ public final class MuesliController: NSObject {
                     existingNotes: self.notesContextForResummary(meeting),
                     manualNotesToRetain: meeting.manualNotes,
                     participantNames: participantNames,
+                    speakerOwnership: speakerOwnership,
                     openRouterAPIKeyOverride: openRouterKey
                 )
                 do {
@@ -6143,7 +6146,8 @@ public final class MuesliController: NSObject {
                         template: templateSnapshot,
                         existingNotes: self.notesContextForResummary(meeting),
                         manualNotesToRetain: meeting.manualNotes,
-                        participantNames: participantNames
+                        participantNames: participantNames,
+                        speakerOwnership: MeetingSummarySpeakerOwnership(state: diarization.speakerState, transcript: rawTranscript)
                     )
                 } catch {
                     try Task.checkCancellation()
@@ -8931,6 +8935,7 @@ public final class MuesliController: NSObject {
                 existingNotes: nil,
                 manualNotesToRetain: manualNotes,
                 participantNames: participantNames,
+                speakerOwnership: nil, // Earlier-session plaintext has no authoritative cross-session owner map.
                 visualContext: mergedVisualContext
             )
         } catch {

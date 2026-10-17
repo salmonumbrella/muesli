@@ -5246,6 +5246,9 @@ public final class DictationStore {
         let start = record.startedAt ?? record.createdAt
         let end = record.endedAt ?? start.addingTimeInterval(record.durationSeconds)
         let followUpRecordName = normalizedFollowUpRecordName(record.followUpToRecordName, recordName: record.id)
+        let rawTranscript = record.speakerTranscript ?? record.text
+        let priorTranscript = try localMeetingTranscript(recordName: record.id, db: db)
+        let transcriptUpdate = priorTranscript == rawTranscript ? "" : "raw_transcript = excluded.raw_transcript,\n            "
         let sql = """
         INSERT INTO meetings (
             title, calendar_event_id, start_time, end_time, duration_seconds,
@@ -5262,8 +5265,7 @@ public final class DictationStore {
             start_time = excluded.start_time,
             end_time = excluded.end_time,
             duration_seconds = excluded.duration_seconds,
-            raw_transcript = excluded.raw_transcript,
-            formatted_notes = excluded.formatted_notes,
+            \(transcriptUpdate)formatted_notes = excluded.formatted_notes,
             meeting_status = excluded.meeting_status,
             manual_notes = excluded.manual_notes,
             word_count = excluded.word_count,
@@ -5289,7 +5291,6 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (formatISODate(start) as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 3, (formatISODate(end) as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 4, record.durationSeconds)
-        let rawTranscript = record.speakerTranscript ?? record.text
         sqlite3_bind_text(statement, 5, (rawTranscript as NSString).utf8String, -1, nil)
         bindOptionalText(record.summaryText, at: 6, statement: statement)
         let meetingStatus = record.meetingStatus ?? .completed
@@ -5327,6 +5328,18 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 1, (recordName as NSString).utf8String, -1, nil)
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
         return sqlite3_column_double(statement, 0)
+    }
+
+    private func localMeetingTranscript(recordName: String, db: OpaquePointer?) throws -> String? {
+        let sql = "SELECT raw_transcript FROM meetings WHERE cloud_record_name = ? LIMIT 1"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (recordName as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return stringColumn(statement, index: 0)
     }
 
     private func makeDictationRecord(_ statement: OpaquePointer?) -> DictationRecord {
