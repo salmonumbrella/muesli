@@ -597,6 +597,65 @@ struct TranscriptFormatterTests {
         #expect(!result.contains("Local speaker"))
     }
 
+    @Test("owner recognition keeps the sole raw mic cluster key behind Microphone")
+    func ownerRecognitionUsesSingleMicIdentityKey() {
+        let epoch = UUID()
+        let identitySegments = [makeDiarSeg(speakerId: "owner_cluster", start: 0, end: 60)]
+        var state = TranscriptFormatter.structured(
+            micSegments: [SpeechSegment(start: 0, end: 10, text: "Owner words")],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: identitySegments
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner_cluster")
+
+        #expect(state.speakers.contains { $0.key == ownerKey })
+        #expect(state.labels[ownerKey] == "Microphone")
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Example", profileID: UUID())
+        #expect(state.render().contains("Example (You): Owner words"))
+    }
+
+    @Test("Owner recognition keeps low-share guest turns on their own raw cluster")
+    func ownerRecognitionDoesNotLabelGuestTurnsAsOwner() {
+        let epoch = UUID()
+        let identitySegments = [
+            makeDiarSeg(speakerId: "owner_cluster", start: 0, end: 594),
+            makeDiarSeg(speakerId: "guest_cluster", start: 594, end: 603),
+        ]
+        var state = TranscriptFormatter.structured(
+            micSegments: [
+                SpeechSegment(start: 0, end: 594, text: "Owner words"),
+                SpeechSegment(start: 594, end: 603, text: "Guest words"),
+                SpeechSegment(start: 604, end: 610, text: "Uncovered words"),
+            ],
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            epoch: epoch,
+            microphoneIdentityRequired: true,
+            microphoneOwnerRecognitionEnabled: true,
+            microphoneIdentitySegments: identitySegments
+        )
+        let ownerKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "owner_cluster")
+        let guestKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "guest_cluster")
+
+        let unattributedKey = MeetingSpeakerKey(epoch: epoch, channel: .microphone, clusterID: "aggregate:unattributed")
+        #expect(state.turns.map(\.speaker) == [ownerKey, guestKey, unattributedKey])
+        #expect(state.speakers.first { $0.key == unattributedKey }?.isAssignable == false)
+        state.applySelfEvidence(accessibility: [], voice: [ownerKey], ownerName: "Example", profileID: UUID())
+        #expect(state.labels[guestKey] == "Microphone")
+        #expect(state.labels[unattributedKey] == "Microphone")
+        #expect(state.render().contains("Example (You): Owner words"))
+        #expect(state.render().contains("Microphone: Guest words"))
+        #expect(state.render().contains("Microphone: Uncovered words"))
+    }
+
     @Test("empty mic diarization keeps the You label")
     func emptyMicDiarizationKeepsYou() {
         let meetingStart = Date(timeIntervalSince1970: 0)

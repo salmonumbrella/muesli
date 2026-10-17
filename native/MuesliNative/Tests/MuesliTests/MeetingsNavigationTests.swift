@@ -1180,6 +1180,15 @@ struct MeetingsNavigationTests {
         #expect(error.localizedDescription.contains("speaker identities could not be checked"))
     }
 
+    @Test("retranscribe version-guard failures restore the original meeting status")
+    func retranscribeVersionGuardFailureRestoresOriginalStatus() {
+        #expect(MuesliController.retranscriptionFailureStatus(
+            originalStatus: .completed,
+            didSetProcessing: true,
+            error: MeetingRetranscriptionError.recordingUnavailable
+        ) == .completed)
+    }
+
     @Test("retranscribe save failures restore original meeting status")
     func retranscribeSaveFailuresRestoreOriginalMeetingStatus() {
         #expect(MuesliController.retranscriptionFailureStatus(
