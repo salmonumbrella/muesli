@@ -268,8 +268,9 @@ private struct SearchMeetingRow: View {
         if record.formattedNotes.lowercased().contains(q) {
             return MeetingPreviewText.plainText(from: record.formattedNotes)
         }
-        if record.rawTranscript.lowercased().contains(q) {
-            return MeetingPreviewText.plainText(from: record.rawTranscript)
+        let readableTranscript = MeetingSpeakerState.modelFacingTranscript(record.rawTranscript)
+        if readableTranscript.lowercased().contains(q) || record.rawTranscript.lowercased().contains(q) {
+            return MeetingPreviewText.plainText(from: readableTranscript)
         }
         return ""
     }

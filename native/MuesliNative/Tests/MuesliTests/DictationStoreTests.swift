@@ -3931,6 +3931,24 @@ struct DictationStoreTests {
         #expect(byNotes.count == 1)
     }
 
+    @Test("searchMeetings matches escaped speaker labels in their readable form")
+    func searchMeetingsEscapedSpeakerLabel() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.insertMeeting(
+            title: "Speaker label search",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: #"[00:00:01] Team\: Example: Ship Friday."#,
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        #expect(try store.searchMeetings(query: "Team: Example").map(\.id) == [id])
+    }
+
     @Test("searchMeetings matches manual notes")
     func searchMeetingsManualNotes() throws {
         let store = try makeStore()

@@ -38,4 +38,11 @@ struct MeetingPreviewTextTests {
 
         #expect(preview == "No notes yet")
     }
+
+    @Test("speaker label escapes are hidden from transcript previews")
+    func speakerLabelPreviewIsReadable() {
+        let preview = MeetingPreviewText.snippet(from: #"[00:00:01] Team\: Example: Ship Friday."#)
+
+        #expect(preview == "[00:00:01] Team: Example: Ship Friday.")
+    }
 }

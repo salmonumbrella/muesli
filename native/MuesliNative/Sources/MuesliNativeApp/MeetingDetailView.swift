@@ -1804,7 +1804,7 @@ struct MeetingDetailView: View {
                 }
             }
         case .transcript:
-            body = editedText ?? meeting.rawTranscript
+            body = MeetingSpeakerState.modelFacingTranscript(editedText ?? meeting.rawTranscript)
         }
         let wordCount = body.split(whereSeparator: { $0.isWhitespace }).count
         return MeetingExporter.metadataHeader(for: meeting, wordCount: wordCount) + "\n" + body
@@ -1849,7 +1849,8 @@ struct MeetingDetailView: View {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
-            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
+            let transcript = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(transcript)"
         }
         return meeting.formattedNotes
     }
@@ -1882,7 +1883,8 @@ struct MeetingDetailView: View {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
-            return "## Raw Transcript\n\n\(meeting.rawTranscript)"
+            let transcript = MeetingSpeakerState.modelFacingTranscript(meeting.rawTranscript)
+            return "## Raw Transcript\n\n\(transcript)"
         }
         return meeting.formattedNotes
     }
@@ -2270,7 +2272,7 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
     }
 
     static func messages(from transcript: String, startingAt firstID: Int = 0, speakerState: MeetingSpeakerState? = nil) -> [TranscriptChatMessage] {
-        if let speakerState, speakerState.isValid, speakerState.render() == transcript {
+        if let speakerState, speakerState.isValid, speakerState.matchesTranscript(transcript) {
             let labels = speakerState.labels
             return speakerState.turns.enumerated().map { index, turn in
                 let key = speakerState.canonicalKey(for: turn.speaker) ?? turn.speaker
@@ -2330,24 +2332,41 @@ struct TranscriptChatMessage: Identifiable, Equatable, Sendable {
         _ text: String,
         allowCustomLabel: Bool = false
     ) -> (speaker: String?, text: String) {
-        guard let separator = text.firstIndex(of: ":") else {
+        var candidate = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if allowCustomLabel, character == "\\" {
+                let escapedIndex = text.index(after: index)
+                if escapedIndex < text.endIndex {
+                    let escaped = text[escapedIndex]
+                    if escaped == ":" || escaped == "\\" {
+                        candidate.append(escaped)
+                        index = text.index(after: escapedIndex)
+                        continue
+                    }
+                }
+            }
+            if character == ":" { break }
+            candidate.append(character)
+            index = text.index(after: index)
+        }
+
+        guard index < text.endIndex, text[index] == ":" else { return (nil, text) }
+        let label = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isLikelySpeakerLabel(label, allowCustomLabel: allowCustomLabel) else {
             return (nil, text)
         }
 
-        let candidate = text[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isLikelySpeakerLabel(candidate, allowCustomLabel: allowCustomLabel) else {
-            return (nil, text)
-        }
-
-        let bodyStart = text.index(after: separator)
+        let bodyStart = text.index(after: index)
         let body = text[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
-        return (candidate, body.isEmpty ? text : body)
+        return (label, body.isEmpty ? text : body)
     }
 
     private static func isLikelySpeakerLabel(_ label: String, allowCustomLabel: Bool = false) -> Bool {
         guard !label.isEmpty else { return false }
         if allowCustomLabel {
-            return label.count <= 96 && MeetingSpeakerState.safeLabel(label) == label
+            return MeetingSpeakerState.safeLabel(label) == label
         }
         guard label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }

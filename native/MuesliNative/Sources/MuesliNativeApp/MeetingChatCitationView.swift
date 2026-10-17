@@ -23,18 +23,26 @@ struct MeetingChatDocumentTarget {
         speakerState: MeetingSpeakerState? = nil
     ) -> [NSRange] {
         let nsText = text as NSString
-        if let speakerState, speakerState.isValid, speakerState.render() == text {
+        if let speakerState, speakerState.isValid, speakerState.matchesTranscript(text) {
+            let isLegacyRender = speakerState.renderLegacy() == text
             let labels = speakerState.labels
-            var location = 0
+            var searchLocation = 0
             var ranges: [NSRange] = []
-            for (index, turn) in speakerState.turns.enumerated() {
-                let renderedTurn = "[\(turn.timestamp)] \(labels[turn.speaker] ?? "Unknown speaker"): \(turn.text)"
-                let renderedLength = (renderedTurn as NSString).length
-                ranges.append(NSRange(location: location, length: renderedLength))
-                location += renderedLength
-                if index < speakerState.turns.count - 1 { location += 1 }
+            for turn in speakerState.turns {
+                let speaker = labels[turn.speaker] ?? "Unknown speaker"
+                let renderedTurn = isLegacyRender
+                    ? MeetingSpeakerState.renderLegacyTranscriptTurn(timestamp: turn.timestamp, speaker: speaker, text: turn.text)
+                    : MeetingSpeakerState.renderTranscriptTurn(timestamp: turn.timestamp, speaker: speaker, text: turn.text)
+                let searchRange = NSRange(location: searchLocation, length: nsText.length - searchLocation)
+                let renderedRange = nsText.range(of: renderedTurn, options: [], range: searchRange)
+                guard renderedRange.location != NSNotFound else { return [] }
+                ranges.append(renderedRange)
+                searchLocation = NSMaxRange(renderedRange)
+                if searchLocation < nsText.length, nsText.character(at: searchLocation) == 10 {
+                    searchLocation += 1
+                }
             }
-            return location <= nsText.length ? ranges : []
+            return ranges
         }
 
         var ranges: [NSRange] = []

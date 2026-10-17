@@ -124,7 +124,81 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
 
     public func render() -> String {
         let names = labels
-        return turns.map { "[\($0.timestamp)] \(names[$0.speaker] ?? "Unknown speaker"): \($0.text)" }.joined(separator: "\n")
+        return turns.map {
+            Self.renderTranscriptTurn(timestamp: $0.timestamp,
+                speaker: names[$0.speaker] ?? "Unknown speaker", text: $0.text)
+        }.joined(separator: "\n")
+    }
+
+    /// Renders the pre-escaping transcript format used by existing saved meetings.
+    public func renderLegacy() -> String {
+        let names = labels
+        return turns.map {
+            Self.renderLegacyTranscriptTurn(timestamp: $0.timestamp,
+                speaker: names[$0.speaker] ?? "Unknown speaker", text: $0.text)
+        }.joined(separator: "\n")
+    }
+
+    public func matchesTranscript(_ transcript: String) -> Bool {
+        render() == transcript || renderLegacy() == transcript
+    }
+
+    public func matchesTranscriptDigest(_ digest: String) -> Bool {
+        Self.digest(render()) == digest || Self.digest(renderLegacy()) == digest
+    }
+
+    public static func renderTranscriptTurn(timestamp: String, speaker: String, text: String) -> String {
+        "[\(timestamp)] \(transcriptLabel(speaker)): \(text)"
+    }
+
+    public static func renderLegacyTranscriptTurn(timestamp: String, speaker: String, text: String) -> String {
+        "[\(timestamp)] \(speaker): \(text)"
+    }
+
+    public static func escapedTranscriptSpeakerLabel(_ label: String) -> String {
+        transcriptLabel(label)
+    }
+
+    /// Removes only the escaping added to timestamped speaker labels. Speech text remains byte-for-byte intact.
+    public static func modelFacingTranscript(_ transcript: String) -> String {
+        transcript.components(separatedBy: "\n").map { line in
+            guard line.first == "[", let timestampEnd = line.firstIndex(of: "]") else { return line }
+            let timestamp = line[line.index(after: line.startIndex)..<timestampEnd]
+            guard timestamp.count == 8, timestamp.allSatisfy({ $0.isNumber || $0 == ":" }),
+                  line.index(after: timestampEnd) < line.endIndex,
+                  line[line.index(after: timestampEnd)] == " " else { return line }
+
+            let start = line.index(after: line.index(after: timestampEnd))
+            var cursor = start
+            var precedingBackslashes = 0
+            var separator: String.Index?
+            while cursor < line.endIndex {
+                if line[cursor] == ":", precedingBackslashes.isMultiple(of: 2) {
+                    let next = line.index(after: cursor)
+                    if next < line.endIndex, line[next] == " " { separator = cursor; break }
+                }
+                precedingBackslashes = line[cursor] == "\\" ? precedingBackslashes + 1 : 0
+                cursor = line.index(after: cursor)
+            }
+            guard let separator else { return line }
+            let label = String(line[start..<separator])
+            var decoded = ""
+            var index = label.startIndex
+            while index < label.endIndex {
+                if label[index] == "\\" {
+                    let next = label.index(after: index)
+                    if next < label.endIndex, label[next] == "\\" || label[next] == ":" {
+                        decoded.append(label[next])
+                        index = label.index(after: next)
+                        continue
+                    }
+                }
+                decoded.append(label[index])
+                index = label.index(after: index)
+            }
+            guard transcriptLabel(decoded) == label else { return line }
+            return String(line[..<start]) + decoded + String(line[separator...])
+        }.joined(separator: "\n")
     }
 
     public static func digest(_ text: String) -> String {
@@ -133,6 +207,11 @@ public struct MeetingSpeakerState: Codable, Equatable, Sendable {
 
     private static func collisionKey(_ label: String) -> String {
         label.precomposedStringWithCanonicalMapping.lowercased()
+    }
+
+    private static func transcriptLabel(_ label: String) -> String {
+        label.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ":", with: "\\:")
     }
 
     public static func safeLabel(_ name: String) -> String {

@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 enum MeetingPreviewText {
     static func snippet(from source: String, limit: Int = 88) -> String {
@@ -17,7 +18,7 @@ enum MeetingPreviewText {
         var lines: [String] = []
         var isInsideFence = false
 
-        for rawLine in markdown
+        for rawLine in MeetingSpeakerState.modelFacingTranscript(markdown)
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .split(separator: "\n", omittingEmptySubsequences: false) {
