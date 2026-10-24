@@ -2088,6 +2088,11 @@ struct SettingsView: View {
                     settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Auto-transcribe detected meetings") {
+                    settingsControl("auto_record_detected_meetings")
+                }
+                settingsDescription("Start transcription when browser, camera, microphone, or app audio activity indicates a meeting. This may start before a call is answered. Make sure participants know you are transcribing.")
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsControl("recording_policy")
                 }
@@ -2153,7 +2158,7 @@ struct SettingsView: View {
                 }
                 settingsDescription("Show notifications when a call is detected from browser, camera, microphone, or app audio activity.")
 
-                if appState.config.showMeetingDetectionNotification {
+                if appState.config.showMeetingDetectionNotification || appState.config.autoRecordDetectedMeetings {
                     Divider().background(MuesliTheme.surfaceBorder)
                     mutedMeetingDetectionAppsControl
                 }
@@ -3203,7 +3208,7 @@ struct SettingsView: View {
     private var mutedMeetingDetectionAppsControl: some View {
         let muted = Set(appState.config.mutedMeetingDetectionAppBundleIDs)
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Don't notify me when a call is detected in these apps:")
+            Text("Ignore detected meetings in these apps (notifications and auto-transcription):")
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textPrimary)
 

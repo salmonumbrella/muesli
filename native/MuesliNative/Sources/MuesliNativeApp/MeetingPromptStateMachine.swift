@@ -9,6 +9,7 @@ struct MeetingPromptVisibility {
 struct MeetingPromptDecision: Equatable {
     enum Action: Equatable {
         case show
+        case startRecording
         case hide
         case none
     }
@@ -54,6 +55,7 @@ final class MeetingPromptStateMachine {
     func evaluate(
         candidate: MeetingCandidate?,
         detectionEnabled: Bool,
+        autoRecordDetectedMeetings: Bool = false,
         isRecording: Bool,
         isStartingRecording: Bool,
         isCalendarNotificationVisible: Bool,
@@ -111,7 +113,7 @@ final class MeetingPromptStateMachine {
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .autoDismissedSuppression)
         }
 
-        if visiblePromptID == candidate.id {
+        if visiblePromptID == candidate.id, !autoRecordDetectedMeetings {
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .promptAlreadyVisible)
         }
 
@@ -119,6 +121,14 @@ final class MeetingPromptStateMachine {
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .candidatePending)
         }
 
+        if autoRecordDetectedMeetings {
+            // Reserve before dispatching to the main actor. Duplicate evaluations,
+            // a failed startup, or stopping during this detection must not retry.
+            // Include URL-only hints so an open tab cannot restart transcription.
+            recordingStartedSuppressionIDs.insert(candidate.suppressionID)
+            resetPendingCandidate()
+            return MeetingPromptDecision(action: .startRecording, candidate: candidate, reason: .eligible)
+        }
         return MeetingPromptDecision(action: .show, candidate: candidate, reason: .eligible)
     }
 

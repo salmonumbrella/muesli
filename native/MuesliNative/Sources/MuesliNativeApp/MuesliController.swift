@@ -946,7 +946,20 @@ public final class MuesliController: NSObject {
         meetingMonitor.detectionEnabledProvider = { [weak self] in
             guard let self else { return false }
             return self.config.showMeetingDetectionNotification
+                || self.config.autoRecordDetectedMeetings
                 || self.activeMeetingAutoStop.isArmed
+        }
+        meetingMonitor.autoRecordDetectedMeetingsProvider = { [weak self] in
+            self?.config.autoRecordDetectedMeetings ?? false
+        }
+        meetingMonitor.onAutoRecordCandidate = { [weak self] candidate in
+            guard let self else { return }
+            guard self.config.autoRecordDetectedMeetings else {
+                self.presentMeetingDetection(candidate)
+                return
+            }
+            guard !self.isShowingCalendarNotification else { return }
+            self.startDetectedMeetingRecording(candidate)
         }
         meetingMonitor.mutedDetectionBundleIDsProvider = { [weak self] in
             Set(self?.config.mutedMeetingDetectionAppBundleIDs ?? [])
@@ -4092,6 +4105,7 @@ public final class MuesliController: NSObject {
         config.showMeetingDetectionNotification
             || config.showScheduledMeetingNotifications
             || config.autoRecordMeetings
+            || config.autoRecordDetectedMeetings
     }
 
     private var shouldRunCalendarMonitor: Bool {
@@ -4100,7 +4114,7 @@ public final class MuesliController: NSObject {
 
     private func syncMeetingDetectionMonitor() {
         let shouldRun = meetingFeatureMonitorsAllowed
-            && (config.showMeetingDetectionNotification || activeMeetingAutoStop.isArmed)
+            && (config.showMeetingDetectionNotification || config.autoRecordDetectedMeetings || activeMeetingAutoStop.isArmed)
         if shouldRun && !meetingDetectionMonitorStarted {
             meetingMonitor.start()
             meetingDetectionMonitorStarted = true
@@ -9612,6 +9626,25 @@ public final class MuesliController: NSObject {
         if !didShow { meetingSignalLossPromptState.markAutoDismissed() }
     }
 
+    private func startDetectedMeetingRecording(_ candidate: MeetingCandidate) {
+        let calendarEvent = candidate.evidence.contains(.calendarEvent)
+            ? currentOrNearbyCachedCalendarEvent()
+            : nil
+        if startMeetingRecordingFromEntryPoint(
+            title: candidate.subtitle,
+            calendarOccurrence: calendarEvent?.calendarOccurrence,
+            autoStopSource: MeetingAutoStopSource(candidate: candidate),
+            presentation: .backgroundPill,
+            startOrigin: .detectedPrompt
+        ) {
+            meetingMonitor.markRecordingStarted(candidate)
+            dismissPresentedMeetingDetection()
+            showPendingMeetingCompletionNotificationIfPossible()
+        } else {
+            meetingMonitor.refreshState()
+        }
+    }
+
     private func presentMeetingDetection(_ candidate: MeetingCandidate) {
         guard config.showMeetingDetectionNotification,
               !isShowingCalendarNotification,
@@ -9634,22 +9667,7 @@ public final class MuesliController: NSObject {
             platform: MeetingPlatform(candidate.platform),
             onStartRecording: { [weak self] in
                 guard let self else { return }
-                let calendarEvent = candidate.evidence.contains(.calendarEvent)
-                    ? self.currentOrNearbyCachedCalendarEvent()
-                    : nil
-                if self.startMeetingRecordingFromEntryPoint(
-                    title: title,
-                    calendarOccurrence: calendarEvent?.calendarOccurrence,
-                    autoStopSource: MeetingAutoStopSource(candidate: candidate),
-                    presentation: .backgroundPill,
-                    startOrigin: .detectedPrompt
-                ) {
-                    self.meetingMonitor.markRecordingStarted(candidate)
-                    self.presentedMeetingCandidate = nil
-                    self.showPendingMeetingCompletionNotificationIfPossible()
-                } else {
-                    self.meetingMonitor.refreshState()
-                }
+                self.startDetectedMeetingRecording(candidate)
             },
             onDismiss: { [weak self] in
                 guard let self else { return }

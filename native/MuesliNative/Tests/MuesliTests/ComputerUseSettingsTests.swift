@@ -82,6 +82,29 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("detected meeting auto-transcription uses the shared persistent setting")
+    func detectedMeetingAutoTranscriptionSetting() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: configStore)
+        let definitions = controller.settingsDefinitions()
+        let setting = try #require(definitions.first { $0.id == "auto_record_detected_meetings" })
+        #expect(setting.read(controller.config) == "off")
+        for value in ["on", "off"] {
+            _ = try await MuesliSettings.apply(.init(setting: setting.id, value: value), settings: definitions,
+                snapshots: [setting.snapshot(config: controller.config)], config: { controller.config },
+                persistedConfig: { configStore.load() })
+            #expect(controller.config.autoRecordDetectedMeetings == (value == "on"))
+            #expect(configStore.load().autoRecordDetectedMeetings == (value == "on"))
+        }
+    }
+
     @Test("generic activation asks scope and model, then verifies both writes", arguments: ["Dictation", "Meetings", "Both", "Only save the preference"])
     func activatePreference(scope: String) async {
         let h = ActivationHarness()

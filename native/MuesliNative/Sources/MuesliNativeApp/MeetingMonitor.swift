@@ -7,6 +7,7 @@ import os
 final class MeetingMonitor {
     var calendarEventProvider: (() -> CalendarEventContext?)?
     var detectionEnabledProvider: (() -> Bool)?
+    var autoRecordDetectedMeetingsProvider: (() -> Bool)?
     var recordingLifecycleProvider: (() -> MeetingRecordingLifecycleSnapshot)?
     var selfAudioActivityActiveProvider: (() -> Bool)?
     var isCalendarNotificationVisibleProvider: (() -> Bool)?
@@ -14,6 +15,7 @@ final class MeetingMonitor {
     var mutedDetectionBundleIDsProvider: (() -> Set<String>)?
     var onActivityCandidateChanged: ((MeetingCandidate?) -> Void)?
     var onPromptCandidateChanged: ((MeetingCandidate?) -> Void)?
+    var onAutoRecordCandidate: ((MeetingCandidate) -> Void)?
 
     private lazy var detectionService = MeetingDetectionService(
         contextProvider: { [weak self] now in
@@ -158,6 +160,8 @@ final class MeetingMonitor {
             onPromptCandidateChanged?(candidate)
         case .hide:
             onPromptCandidateChanged?(nil)
+        case .startRecording(let candidate):
+            onAutoRecordCandidate?(candidate)
         }
     }
 
@@ -170,6 +174,7 @@ final class MeetingMonitor {
             sensorAttributions: sensorAttributionMonitor.snapshot(),
             calendarEvent: calendarEventProvider?(),
             detectionEnabled: detectionEnabledProvider?() ?? true,
+            autoRecordDetectedMeetings: autoRecordDetectedMeetingsProvider?() ?? false,
             isRecording: lifecycle.isRecording,
             isStartingRecording: lifecycle.isStarting,
             selfAudioActivityActive: selfAudioActivityActiveProvider?() ?? false,
@@ -188,6 +193,7 @@ final class MeetingMonitor {
 
 private enum MeetingPromptUpdate {
     case show(MeetingCandidate)
+    case startRecording(MeetingCandidate)
     case hide
 }
 
@@ -197,6 +203,7 @@ private struct MeetingDetectionEvaluationContext {
     let sensorAttributions: SensorAttributionSnapshot
     let calendarEvent: CalendarEventContext?
     let detectionEnabled: Bool
+    let autoRecordDetectedMeetings: Bool
     let isRecording: Bool
     let isStartingRecording: Bool
     let selfAudioActivityActive: Bool
@@ -213,6 +220,7 @@ private struct MeetingDetectionEvaluationContext {
         sensorAttributions: .empty,
         calendarEvent: nil,
         detectionEnabled: false,
+        autoRecordDetectedMeetings: false,
         isRecording: false,
         isStartingRecording: false,
         selfAudioActivityActive: false,
@@ -645,6 +653,7 @@ private actor MeetingDetectionService {
         let decision = promptState.evaluate(
             candidate: candidate,
             detectionEnabled: context.detectionEnabled,
+            autoRecordDetectedMeetings: context.autoRecordDetectedMeetings,
             isRecording: context.isRecording,
             isStartingRecording: context.isStartingRecording,
             isCalendarNotificationVisible: context.isCalendarNotificationVisible,
@@ -657,6 +666,9 @@ private actor MeetingDetectionService {
             guard let candidate = decision.candidate else { return }
             log("prompt_shown id=\(candidate.id) platform=\(candidate.platform.displayName) app=\(candidate.appName)")
             emitPromptUpdate(.show(candidate))
+        case .startRecording:
+            guard let candidate = decision.candidate else { return }
+            emitPromptUpdate(.startRecording(candidate))
         case .hide:
             emitPromptUpdate(.hide)
         case .none:

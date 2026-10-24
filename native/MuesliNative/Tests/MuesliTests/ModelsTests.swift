@@ -9,6 +9,18 @@ import MuesliCore
 @Suite("BackendOption")
 struct BackendOptionTests {
 
+    @Test("detected-meeting auto-transcription defaults off and persists", arguments: [false, true])
+    func detectedMeetingAutoRecordingPersistence(enabled: Bool) throws {
+        #expect(AppConfig().autoRecordDetectedMeetings == false)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8)).autoRecordDetectedMeetings == false)
+        var config = AppConfig()
+        config.autoRecordDetectedMeetings = enabled
+        let data = try JSONEncoder().encode(config)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["auto_record_detected_meetings"] as? Bool == enabled)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data).autoRecordDetectedMeetings == enabled)
+    }
+
     @Test("all options have unique models")
     func uniqueModels() {
         let models = BackendOption.all.map(\.model)

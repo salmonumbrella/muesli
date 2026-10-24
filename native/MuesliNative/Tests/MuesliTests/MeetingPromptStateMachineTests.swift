@@ -48,6 +48,66 @@ struct MeetingPromptStateMachineTests {
         )
     }
 
+    @Test("auto-transcription reserves each eligible detection once", arguments: [false, true])
+    func automaticRecording(enabled: Bool) {
+        let machine = immediateMachine()
+        let call = candidate("meeting-session:app:com.apple.FaceTime:1")
+        func evaluate(_ candidate: MeetingCandidate?, recording: Bool = false, starting: Bool = false) -> MeetingPromptDecision {
+            machine.evaluate(candidate: candidate, detectionEnabled: true,
+                autoRecordDetectedMeetings: enabled, isRecording: recording, isStartingRecording: starting,
+                isCalendarNotificationVisible: false,
+                visibility: MeetingPromptVisibility(isVisible: false, currentPromptID: nil, shownAt: nil), now: now)
+        }
+        #expect(evaluate(call, recording: true).reason == .recording)
+        #expect(evaluate(call, starting: true).reason == .recording)
+        #expect(evaluate(call).action == (enabled ? .startRecording : .show))
+        if enabled {
+            // Delivery duplicates, failed startup and explicit stop all leave the
+            // detector idle with the same candidate. None may retry automatically.
+            for _ in 0..<10 {
+                #expect(evaluate(call).reason == .recordingStartedSuppression)
+            }
+            #expect(evaluate(candidate("meeting-session:app:com.apple.FaceTime:2")).action == .startRecording)
+        }
+    }
+
+    @Test("automatic transcription keeps detection stability and dismissal rules")
+    func automaticRecordingEligibility() {
+        let machine = MeetingPromptStateMachine()
+        let call = candidate("meeting-session:app:com.apple.FaceTime:1")
+        func evaluate(_ candidate: MeetingCandidate?, at offset: TimeInterval, calendarVisible: Bool = false) -> MeetingPromptDecision {
+            machine.evaluate(candidate: candidate, detectionEnabled: true,
+                autoRecordDetectedMeetings: true, isRecording: false, isStartingRecording: false,
+                isCalendarNotificationVisible: calendarVisible,
+                visibility: MeetingPromptVisibility(isVisible: false, currentPromptID: nil, shownAt: nil),
+                now: now.addingTimeInterval(offset))
+        }
+        #expect(evaluate(call, at: 0).reason == .candidatePending)
+        #expect(evaluate(nil, at: 1).reason == .noCandidate)
+        #expect(evaluate(call, at: 4).reason == .candidatePending)
+        #expect(evaluate(call, at: 8, calendarVisible: true).reason == .calendarNotificationVisible)
+        #expect(evaluate(call, at: 9).reason == .candidatePending)
+        machine.markUserDismissed(call)
+        #expect(evaluate(call, at: 13).reason == .userDismissedSuppression)
+        let next = candidate("meeting-session:app:com.apple.FaceTime:2")
+        #expect(evaluate(next, at: 14).reason == .candidatePending)
+        #expect(evaluate(next, at: 17).action == .startRecording)
+    }
+
+    @Test("automatic URL-only detection does not restart after stop")
+    func automaticURLOnlyRecording() {
+        let machine = immediateMachine()
+        let hint = candidate(evidence: [.browserURL, .foregroundApp])
+        func evaluate() -> MeetingPromptDecision {
+            machine.evaluate(candidate: hint, detectionEnabled: true,
+                autoRecordDetectedMeetings: true, isRecording: false, isStartingRecording: false,
+                isCalendarNotificationVisible: false,
+                visibility: MeetingPromptVisibility(isVisible: false, currentPromptID: nil, shownAt: nil), now: now)
+        }
+        #expect(evaluate().action == .startRecording)
+        #expect(evaluate().reason == .recordingStartedSuppression)
+    }
+
     @Test("eligible candidate waits for stability delay")
     func eligibleCandidateWaitsForStabilityDelay() {
         let machine = MeetingPromptStateMachine()
