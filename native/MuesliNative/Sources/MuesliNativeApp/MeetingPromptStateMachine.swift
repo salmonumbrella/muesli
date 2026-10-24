@@ -98,12 +98,18 @@ final class MeetingPromptStateMachine {
             lastCandidateID = candidate.id
         }
 
-        if userDismissedSuppressionIDs.contains(candidate.suppressionID) {
+        var suppressionIDs = [candidate.suppressionID]
+        if autoRecordDetectedMeetings,
+           !candidate.suppressionID.hasPrefix("meeting-session:"),
+           let hintID = browserHintSuppressionID(for: candidate) {
+            suppressionIDs.append(hintID)
+        }
+        if !userDismissedSuppressionIDs.isDisjoint(with: suppressionIDs) {
             resetPendingCandidate()
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .userDismissedSuppression)
         }
 
-        if recordingStartedSuppressionIDs.contains(candidate.suppressionID) {
+        if !recordingStartedSuppressionIDs.isDisjoint(with: suppressionIDs) {
             resetPendingCandidate()
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .recordingStartedSuppression)
         }
@@ -124,8 +130,11 @@ final class MeetingPromptStateMachine {
         if autoRecordDetectedMeetings {
             // Reserve before dispatching to the main actor. Duplicate evaluations,
             // a failed startup, or stopping during this detection must not retry.
-            // Include URL-only hints so an open tab cannot restart transcription.
+            // Also consume the idle room hint when media evidence disappears.
             recordingStartedSuppressionIDs.insert(candidate.suppressionID)
+            if let hintID = browserHintSuppressionID(for: candidate) {
+                recordingStartedSuppressionIDs.insert(hintID)
+            }
             resetPendingCandidate()
             return MeetingPromptDecision(action: .startRecording, candidate: candidate, reason: .eligible)
         }
@@ -148,6 +157,9 @@ final class MeetingPromptStateMachine {
     func markUserDismissed(_ candidate: MeetingCandidate) {
         if visiblePromptID == candidate.id { visiblePromptID = nil }
         userDismissedSuppressionIDs.insert(candidate.suppressionID)
+        if let hintID = browserHintSuppressionID(for: candidate) {
+            userDismissedSuppressionIDs.insert(hintID)
+        }
         autoDismissedSuppressionIDs.removeValue(forKey: candidate.suppressionID)
         resetPendingCandidate()
     }
@@ -156,6 +168,9 @@ final class MeetingPromptStateMachine {
     func markRecordingStarted(_ candidate: MeetingCandidate) -> Bool {
         if visiblePromptID == candidate.id { visiblePromptID = nil }
         lastCandidateID = candidate.id
+        if let hintID = browserHintSuppressionID(for: candidate) {
+            recordingStartedSuppressionIDs.insert(hintID)
+        }
         guard candidate.suppressionID.hasPrefix("meeting-session:") else {
             resetPendingCandidate()
             return false
@@ -203,6 +218,11 @@ final class MeetingPromptStateMachine {
         } else if visiblePromptID == visibility.currentPromptID || visibility.currentPromptID == nil {
             visiblePromptID = nil
         }
+    }
+
+    private func browserHintSuppressionID(for candidate: MeetingCandidate) -> String? {
+        guard candidate.evidence.contains(.browserURL), let url = candidate.url else { return nil }
+        return "browser-hint:\(candidate.sourceBundleID ?? ""):\(url)"
     }
 
     private func autoDismissExpiry(for candidate: MeetingCandidate, now: Date) -> Date {

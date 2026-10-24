@@ -9,18 +9,6 @@ import MuesliCore
 @Suite("BackendOption")
 struct BackendOptionTests {
 
-    @Test("detected-meeting auto-transcription defaults off and persists", arguments: [false, true])
-    func detectedMeetingAutoRecordingPersistence(enabled: Bool) throws {
-        #expect(AppConfig().autoRecordDetectedMeetings == false)
-        #expect(try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8)).autoRecordDetectedMeetings == false)
-        var config = AppConfig()
-        config.autoRecordDetectedMeetings = enabled
-        let data = try JSONEncoder().encode(config)
-        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(json["auto_record_detected_meetings"] as? Bool == enabled)
-        #expect(try JSONDecoder().decode(AppConfig.self, from: data).autoRecordDetectedMeetings == enabled)
-    }
-
     @Test("all options have unique models")
     func uniqueModels() {
         let models = BackendOption.all.map(\.model)
@@ -1103,6 +1091,16 @@ struct MeetingSummaryBackendTests {
 @Suite("AppConfig")
 struct AppConfigTests {
 
+    @Test("detected-meeting auto-transcription keeps legacy configs off and uses its canonical key")
+    func detectedMeetingAutoRecordingCoding() throws {
+        #expect(try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8)).autoRecordDetectedMeetings == false)
+        var config = AppConfig()
+        config.autoRecordDetectedMeetings = true
+        let data = try JSONEncoder().encode(config)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["auto_record_detected_meetings"] as? Bool == true)
+    }
+
     @Test("default values")
     func defaults() {
         let config = AppConfig()
@@ -1124,6 +1122,7 @@ struct AppConfigTests {
         #expect(config.showScheduledMeetingNotifications == true)
         #expect(config.scheduledMeetingNotificationLeadTime == .atStart)
         #expect(config.showMeetingDetectionNotification == true)
+        #expect(config.autoRecordDetectedMeetings == false)
         #expect(config.mutedMeetingDetectionAppBundleIDs.isEmpty)
         #expect(config.openAIAPIKey.isEmpty)
         #expect(config.meetingRecordingFileFormat == MeetingRecordingFileFormat.m4a.rawValue)

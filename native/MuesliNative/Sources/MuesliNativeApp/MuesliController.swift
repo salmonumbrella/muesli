@@ -953,7 +953,7 @@ public final class MuesliController: NSObject {
             self?.config.autoRecordDetectedMeetings ?? false
         }
         meetingMonitor.onAutoRecordCandidate = { [weak self] candidate in
-            guard let self else { return }
+            guard let self, !self.isMutedMeetingDetectionCandidate(candidate) else { return }
             guard self.config.autoRecordDetectedMeetings else {
                 self.presentMeetingDetection(candidate)
                 return

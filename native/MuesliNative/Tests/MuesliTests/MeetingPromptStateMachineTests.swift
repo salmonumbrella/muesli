@@ -48,64 +48,58 @@ struct MeetingPromptStateMachineTests {
         )
     }
 
-    @Test("auto-transcription reserves each eligible detection once", arguments: [false, true])
-    func automaticRecording(enabled: Bool) {
-        let machine = immediateMachine()
-        let call = candidate("meeting-session:app:com.apple.FaceTime:1")
-        func evaluate(_ candidate: MeetingCandidate?, recording: Bool = false, starting: Bool = false) -> MeetingPromptDecision {
-            machine.evaluate(candidate: candidate, detectionEnabled: true,
-                autoRecordDetectedMeetings: enabled, isRecording: recording, isStartingRecording: starting,
-                isCalendarNotificationVisible: false,
-                visibility: MeetingPromptVisibility(isVisible: false, currentPromptID: nil, shownAt: nil), now: now)
-        }
-        #expect(evaluate(call, recording: true).reason == .recording)
-        #expect(evaluate(call, starting: true).reason == .recording)
-        #expect(evaluate(call).action == (enabled ? .startRecording : .show))
-        if enabled {
-            // Delivery duplicates, failed startup and explicit stop all leave the
-            // detector idle with the same candidate. None may retry automatically.
-            for _ in 0..<10 {
-                #expect(evaluate(call).reason == .recordingStartedSuppression)
-            }
-            #expect(evaluate(candidate("meeting-session:app:com.apple.FaceTime:2")).action == .startRecording)
-        }
-    }
-
-    @Test("automatic transcription keeps detection stability and dismissal rules")
-    func automaticRecordingEligibility() {
+    @Test("automatic attempts preserve suppression across browser evidence changes",
+          arguments: ["automatic", "manual", "dismiss", "URL-only", "visible"])
+    func automaticRecording(consumption: String) async throws {
+        let resolver = MeetingCandidateResolver()
+        let tracker = MeetingMediaSessionTracker()
         let machine = MeetingPromptStateMachine()
-        let call = candidate("meeting-session:app:com.apple.FaceTime:1")
-        func evaluate(_ candidate: MeetingCandidate?, at offset: TimeInterval, calendarVisible: Bool = false) -> MeetingPromptDecision {
+        let room = try #require(MeetingURLNormalizer.normalize("https://meet.google.com/pwm-txwq-txy?authuser=0"))
+        func detected(media: Bool, at offset: TimeInterval) async throws -> MeetingCandidate {
+            let signals = MeetingSignalSnapshot(
+                micActive: media, cameraActive: media, calendarEvent: nil,
+                runningApps: [RunningAppInfo(bundleID: "com.google.Chrome", isActive: true)],
+                browserMeetings: [.init(bundleID: "com.google.Chrome", appName: "Chrome", pid: 9876,
+                    url: room.url, normalizedID: room.id, platform: room.platform, isFocused: true)],
+                audioInputProcesses: media ? [.init(pid: 9876, bundleID: "com.google.Chrome", appName: "Chrome",
+                    isRunningInput: true, isRunningOutput: true)] : [],
+                foregroundBundleID: "com.google.Chrome", now: now.addingTimeInterval(offset))
+            return try #require(await tracker.stabilize(candidate: resolver.resolve(signals), snapshot: signals))
+        }
+        func evaluate(_ candidate: MeetingCandidate, at offset: TimeInterval, automatic: Bool = true, visible: Bool = false) -> MeetingPromptDecision {
             machine.evaluate(candidate: candidate, detectionEnabled: true,
-                autoRecordDetectedMeetings: true, isRecording: false, isStartingRecording: false,
-                isCalendarNotificationVisible: calendarVisible,
-                visibility: MeetingPromptVisibility(isVisible: false, currentPromptID: nil, shownAt: nil),
+                autoRecordDetectedMeetings: automatic, isRecording: false, isStartingRecording: false,
+                isCalendarNotificationVisible: false,
+                visibility: MeetingPromptVisibility(isVisible: visible, currentPromptID: visible ? candidate.id : nil, shownAt: visible ? now : nil),
                 now: now.addingTimeInterval(offset))
         }
-        #expect(evaluate(call, at: 0).reason == .candidatePending)
-        #expect(evaluate(nil, at: 1).reason == .noCandidate)
-        #expect(evaluate(call, at: 4).reason == .candidatePending)
-        #expect(evaluate(call, at: 8, calendarVisible: true).reason == .calendarNotificationVisible)
-        #expect(evaluate(call, at: 9).reason == .candidatePending)
-        machine.markUserDismissed(call)
-        #expect(evaluate(call, at: 13).reason == .userDismissedSuppression)
-        let next = candidate("meeting-session:app:com.apple.FaceTime:2")
-        #expect(evaluate(next, at: 14).reason == .candidatePending)
-        #expect(evaluate(next, at: 17).action == .startRecording)
-    }
-
-    @Test("automatic URL-only detection does not restart after stop")
-    func automaticURLOnlyRecording() {
-        let machine = immediateMachine()
-        let hint = candidate(evidence: [.browserURL, .foregroundApp])
-        func evaluate() -> MeetingPromptDecision {
-            machine.evaluate(candidate: hint, detectionEnabled: true,
-                autoRecordDetectedMeetings: true, isRecording: false, isStartingRecording: false,
-                isCalendarNotificationVisible: false,
-                visibility: MeetingPromptVisibility(isVisible: false, currentPromptID: nil, shownAt: nil), now: now)
+        let automatic = consumption == "automatic" || consumption == "URL-only"
+        let initial = try await detected(media: consumption != "URL-only", at: 0)
+        #expect(evaluate(initial, at: 0, automatic: automatic).reason == .candidatePending)
+        #expect(evaluate(initial, at: 3, automatic: automatic).action == (automatic ? .startRecording : .show))
+        if consumption == "visible" {
+            machine.markShown(initial)
+            #expect(evaluate(initial, at: 4, visible: true).reason == .candidatePending)
+            #expect(evaluate(initial, at: 7, visible: true).action == .startRecording)
+        } else if !automatic {
+            machine.markShown(initial)
+            if consumption == "dismiss" { machine.markUserDismissed(initial) }
+            else { machine.markRecordingStarted(initial) }
         }
-        #expect(evaluate().action == .startRecording)
-        #expect(evaluate().reason == .recordingStartedSuppression)
+        // A consumed attempt covers duplicate delivery, startup failure, and Stop.
+        #expect(evaluate(initial, at: 8).action == .none)
+        let parked = try await detected(media: false, at: 20)
+        _ = evaluate(parked, at: 20)
+        #expect(evaluate(parked, at: 24).action == .none)
+        // Keep existing manual prompts when the automatic setting is off.
+        if consumption != "URL-only" {
+            #expect(evaluate(parked, at: 25, automatic: false).reason == .candidatePending)
+            #expect(evaluate(parked, at: 28, automatic: false).action == .show)
+        }
+        let later = try await detected(media: true, at: 80)
+        #expect(later.suppressionID != initial.suppressionID)
+        #expect(evaluate(later, at: 80).reason == .candidatePending)
+        #expect(evaluate(later, at: 83).action == .startRecording)
     }
 
     @Test("eligible candidate waits for stability delay")

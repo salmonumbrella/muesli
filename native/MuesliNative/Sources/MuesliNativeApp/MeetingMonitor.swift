@@ -630,8 +630,8 @@ private actor MeetingDetectionService {
            let unmutedActivityCandidate {
             // Manual recordings can begin before the meeting app becomes active.
             // Consume a media-backed session only after capture has really started,
-            // so failed startups remain retryable and recurring URL-only candidates
-            // are not suppressed for the lifetime of the app.
+            // so failed manual startups remain retryable. URL-only manual prompts
+            // remain available; automatic attempts separately consume idle hints.
             associateActiveRecording(with: unmutedActivityCandidate)
         }
         emitActivityUpdate(unmutedActivityCandidate)

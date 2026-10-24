@@ -2091,7 +2091,7 @@ struct SettingsView: View {
                 settingsRow("Auto-transcribe detected meetings") {
                     settingsControl("auto_record_detected_meetings")
                 }
-                settingsDescription("Start transcription when browser, camera, microphone, or app audio activity indicates a meeting. This may start before a call is answered. Make sure participants know you are transcribing.")
+                settingsDescription("Start transcription when a focused meeting tab, camera, microphone, or app audio indicates a meeting. This may start before a call is answered or joined. Make sure participants know you are transcribing.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsControl("recording_policy")
